@@ -29,19 +29,20 @@ SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Tier 1: Rising Star - New wallet exploding
-TIER1_MIN_WEEKLY_PNL = float(os.getenv("TIER1_MIN_WEEKLY_PNL", "2000"))
+# Tier 1: Rising Star - New wallet with high velocity
+TIER1_MIN_VELOCITY = float(os.getenv("TIER1_MIN_VELOCITY", "500"))  # $/day
 TIER1_MAX_ACCOUNT_AGE_DAYS = int(os.getenv("TIER1_MAX_ACCOUNT_AGE_DAYS", "14"))
 TIER1_MIN_TRADES_WEEK = int(os.getenv("TIER1_MIN_TRADES_WEEK", "30"))
 
-# Tier 2: Accelerating - Sudden growth spike
-TIER2_ACCELERATION_FACTOR = float(os.getenv("TIER2_ACCELERATION_FACTOR", "3.0"))
-TIER2_MIN_WEEKLY_PNL = float(os.getenv("TIER2_MIN_WEEKLY_PNL", "1000"))
-TIER2_MAX_ACCOUNT_AGE_DAYS = int(os.getenv("TIER2_MAX_ACCOUNT_AGE_DAYS", "60"))
+# Tier 2: Fast Grower - High velocity regardless of age
+TIER2_MIN_VELOCITY = float(os.getenv("TIER2_MIN_VELOCITY", "300"))  # $/day
+TIER2_MAX_ACCOUNT_AGE_DAYS = int(os.getenv("TIER2_MAX_ACCOUNT_AGE_DAYS", "30"))
+TIER2_MIN_PROFIT = float(os.getenv("TIER2_MIN_PROFIT", "3000"))
 
-# Tier 3: Consistent Grinder - Sustainable early edge
-TIER3_MIN_WEEKLY_PNL = float(os.getenv("TIER3_MIN_WEEKLY_PNL", "3000"))
-TIER3_MAX_TOTAL_PROFIT = float(os.getenv("TIER3_MAX_TOTAL_PROFIT", "50000"))
+# Tier 3: Hot Streak - High recent activity with good profit
+TIER3_MIN_VELOCITY = float(os.getenv("TIER3_MIN_VELOCITY", "150"))  # $/day
+TIER3_MAX_TOTAL_PROFIT = float(os.getenv("TIER3_MAX_TOTAL_PROFIT", "30000"))
+TIER3_MIN_TRADES_WEEK = int(os.getenv("TIER3_MIN_TRADES_WEEK", "50"))
 
 # Minimum profit to even consider (filters out noise)
 MIN_LEADERBOARD_PROFIT = float(os.getenv("MIN_LEADERBOARD_PROFIT", "1000"))
@@ -49,8 +50,8 @@ MIN_LEADERBOARD_PROFIT = float(os.getenv("MIN_LEADERBOARD_PROFIT", "1000"))
 SEEN_WALLETS_FILE = Path("/root/poly-scout/data/seen_wallets.json")
 
 # Tier display info
-TIER_NAMES = {1: "RISING STAR", 2: "ACCELERATING", 3: "CONSISTENT GRINDER"}
-TIER_EMOJI = {1: "🚀", 2: "📈", 3: "💪"}
+TIER_NAMES = {1: "RISING STAR", 2: "FAST GROWER", 3: "HOT STREAK"}
+TIER_EMOJI = {1: "🚀", 2: "📈", 3: "🔥"}
 
 
 def load_seen_wallets() -> set:
@@ -90,15 +91,12 @@ async def send_telegram(message: str):
 
 def format_growth_notification(wallet: dict) -> str:
     tier = wallet["tier"]
-    growth_str = f"{wallet['growth_rate']:.1f}x" if wallet['growth_rate'] != float('inf') else "NEW"
 
     return f"""{TIER_EMOJI[tier]} <b>Tier {tier}: {TIER_NAMES[tier]}</b>
 
 <b>Address:</b> <code>{wallet['address']}</code>
 <b>Account Age:</b> {wallet['account_age_days']:.0f} days
-<b>This Week:</b> ${wallet['this_week_pnl']:,.0f}
-<b>Last Week:</b> ${wallet['last_week_pnl']:,.0f}
-<b>Growth:</b> {growth_str}
+<b>Velocity:</b> ${wallet['velocity']:,.0f}/day
 <b>Trades/Week:</b> {wallet['trades_this_week']}
 <b>Total Profit:</b> ${wallet['total_profit']:,.0f}
 
@@ -108,8 +106,8 @@ def format_growth_notification(wallet: dict) -> str:
 
 async def analyze_wallet_growth(scanner: WalletScanner, address: str, leaderboard_profit: float) -> dict | None:
     """
-    Analyze wallet for explosive growth patterns.
-    Returns wallet info with tier classification if interesting, None otherwise.
+    Analyze wallet for explosive growth using profit velocity.
+    Velocity = total_profit / account_age_days
     """
     try:
         url = f"{scanner.BASE_URL}/activity"
@@ -121,7 +119,6 @@ async def analyze_wallet_growth(scanner: WalletScanner, address: str, leaderboar
         # Parse timestamps
         now = datetime.now().timestamp()
         week_ago = now - 7 * 86400
-        two_weeks_ago = now - 14 * 86400
 
         # Get first trade timestamp (account age)
         timestamps = [float(a.get("timestamp", 0)) for a in activity if a.get("timestamp")]
@@ -129,51 +126,42 @@ async def analyze_wallet_growth(scanner: WalletScanner, address: str, leaderboar
             return None
 
         first_trade = min(timestamps)
-        account_age_days = (now - first_trade) / 86400
+        account_age_days = max((now - first_trade) / 86400, 1)  # At least 1 day to avoid division by zero
 
-        # Calculate this week's profit
-        this_week_trades = [a for a in activity if float(a.get("timestamp", 0)) > week_ago]
-        this_week_pnl = sum(float(a.get("pnl", 0) or 0) for a in this_week_trades)
-
-        # Calculate last week's profit
-        last_week_trades = [a for a in activity
-                            if two_weeks_ago < float(a.get("timestamp", 0)) <= week_ago]
-        last_week_pnl = sum(float(a.get("pnl", 0) or 0) for a in last_week_trades)
+        # Calculate velocity (profit per day)
+        velocity = leaderboard_profit / account_age_days
 
         # Trade frequency this week
+        this_week_trades = [a for a in activity if float(a.get("timestamp", 0)) > week_ago]
         trades_this_week = len(this_week_trades)
 
         # Determine tier
         tier = None
 
-        # Tier 1: Rising Star - New wallet exploding
-        if (account_age_days < TIER1_MAX_ACCOUNT_AGE_DAYS
-            and this_week_pnl > TIER1_MIN_WEEKLY_PNL
-            and trades_this_week > TIER1_MIN_TRADES_WEEK):
+        # Tier 1: Rising Star - New wallet with explosive velocity
+        if (account_age_days <= TIER1_MAX_ACCOUNT_AGE_DAYS
+            and velocity >= TIER1_MIN_VELOCITY
+            and trades_this_week >= TIER1_MIN_TRADES_WEEK):
             tier = 1
 
-        # Tier 2: Accelerating - Sudden growth spike
-        elif (last_week_pnl > 0
-              and this_week_pnl > TIER2_ACCELERATION_FACTOR * last_week_pnl
-              and this_week_pnl > TIER2_MIN_WEEKLY_PNL
-              and account_age_days < TIER2_MAX_ACCOUNT_AGE_DAYS):
+        # Tier 2: Fast Grower - High velocity, relatively new
+        elif (account_age_days <= TIER2_MAX_ACCOUNT_AGE_DAYS
+              and velocity >= TIER2_MIN_VELOCITY
+              and leaderboard_profit >= TIER2_MIN_PROFIT):
             tier = 2
 
-        # Tier 3: Consistent Grinder - Sustainable early edge
-        elif (this_week_pnl > TIER3_MIN_WEEKLY_PNL
-              and last_week_pnl > TIER3_MIN_WEEKLY_PNL
-              and leaderboard_profit < TIER3_MAX_TOTAL_PROFIT):
+        # Tier 3: Hot Streak - Good velocity + high activity, not too big yet
+        elif (velocity >= TIER3_MIN_VELOCITY
+              and leaderboard_profit <= TIER3_MAX_TOTAL_PROFIT
+              and trades_this_week >= TIER3_MIN_TRADES_WEEK):
             tier = 3
 
         if tier:
-            growth_rate = this_week_pnl / last_week_pnl if last_week_pnl > 0 else float('inf')
             return {
                 "address": address,
                 "tier": tier,
                 "account_age_days": account_age_days,
-                "this_week_pnl": this_week_pnl,
-                "last_week_pnl": last_week_pnl,
-                "growth_rate": growth_rate,
+                "velocity": velocity,
                 "trades_this_week": trades_this_week,
                 "total_profit": leaderboard_profit,
             }
@@ -223,8 +211,8 @@ async def run_scan() -> list[dict]:
                 tier = result["tier"]
                 log(f"  ✓ T{tier} {TIER_NAMES[tier]}: {candidate.address[:12]}... "
                     f"age={result['account_age_days']:.0f}d, "
-                    f"week=${result['this_week_pnl']:,.0f}, "
-                    f"growth={result['growth_rate']:.1f}x")
+                    f"vel=${result['velocity']:,.0f}/d, "
+                    f"trades={result['trades_this_week']}/wk")
                 results.append(result)
 
             # Rate limit
@@ -239,23 +227,24 @@ async def run_scan() -> list[dict]:
 
 async def daemon_loop():
     log("=" * 60)
-    log("  POLY-SCOUT: EXPLOSIVE GROWTH DETECTOR")
+    log("  POLY-SCOUT: EXPLOSIVE GROWTH DETECTOR v2")
     log("=" * 60)
-    log("  Looking for: Emerging alpha traders")
+    log("  Looking for: Emerging alpha traders (velocity-based)")
     log("")
     log("  Tier 1 (Rising Star):")
-    log(f"    - Account < {TIER1_MAX_ACCOUNT_AGE_DAYS} days old")
-    log(f"    - Week PnL > ${TIER1_MIN_WEEKLY_PNL:,.0f}")
-    log(f"    - Trades/week > {TIER1_MIN_TRADES_WEEK}")
+    log(f"    - Account <= {TIER1_MAX_ACCOUNT_AGE_DAYS} days old")
+    log(f"    - Velocity >= ${TIER1_MIN_VELOCITY:,.0f}/day")
+    log(f"    - Trades/week >= {TIER1_MIN_TRADES_WEEK}")
     log("")
-    log("  Tier 2 (Accelerating):")
-    log(f"    - Growth > {TIER2_ACCELERATION_FACTOR}x week-over-week")
-    log(f"    - Week PnL > ${TIER2_MIN_WEEKLY_PNL:,.0f}")
-    log(f"    - Account < {TIER2_MAX_ACCOUNT_AGE_DAYS} days old")
+    log("  Tier 2 (Fast Grower):")
+    log(f"    - Account <= {TIER2_MAX_ACCOUNT_AGE_DAYS} days old")
+    log(f"    - Velocity >= ${TIER2_MIN_VELOCITY:,.0f}/day")
+    log(f"    - Profit >= ${TIER2_MIN_PROFIT:,.0f}")
     log("")
-    log("  Tier 3 (Consistent Grinder):")
-    log(f"    - Week PnL > ${TIER3_MIN_WEEKLY_PNL:,.0f} for 2+ weeks")
-    log(f"    - Total profit < ${TIER3_MAX_TOTAL_PROFIT:,.0f}")
+    log("  Tier 3 (Hot Streak):")
+    log(f"    - Velocity >= ${TIER3_MIN_VELOCITY:,.0f}/day")
+    log(f"    - Profit <= ${TIER3_MAX_TOTAL_PROFIT:,.0f}")
+    log(f"    - Trades/week >= {TIER3_MIN_TRADES_WEEK}")
     log("")
     log(f"  Scan interval: {SCAN_INTERVAL_MINUTES} min")
     log(f"  Telegram: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}")
@@ -264,7 +253,7 @@ async def daemon_loop():
     seen_wallets = load_seen_wallets()
     log(f"Loaded {len(seen_wallets)} seen wallets")
 
-    await send_telegram("🟢 <b>Poly-Scout v2 Started</b>\n\nHunting for explosive growth wallets...")
+    await send_telegram("🟢 <b>Poly-Scout v2 Started</b>\n\nHunting for explosive growth wallets (velocity-based)...")
 
     while True:
         try:
