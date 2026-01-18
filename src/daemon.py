@@ -47,8 +47,8 @@ STRATEGY_MARKET_MAKER = "MARKET_MAKER"
 STRATEGY_MIXED = "MIXED"
 STRATEGY_UNKNOWN = "UNKNOWN"
 
-# Only alert on these strategies (replicable/interesting)
-ALERT_STRATEGIES = {STRATEGY_CRYPTO_ARB, STRATEGY_MARKET_MAKER}
+# Only alert on crypto arb (the 0x8dxd strategy we want to replicate)
+ALERT_STRATEGIES = {STRATEGY_CRYPTO_ARB}
 
 STRATEGY_EMOJI = {
     STRATEGY_CRYPTO_ARB: "🤖",
