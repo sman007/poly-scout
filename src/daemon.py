@@ -208,29 +208,33 @@ def classify_strategy(activity: list) -> dict:
 def format_alert(wallet: dict) -> str:
     """Format alert message with strategy analysis."""
     strat = wallet["strategy_info"]
-    emoji = STRATEGY_EMOJI.get(strat["strategy"], "❓")
+    emoji = STRATEGY_EMOJI.get(strat["strategy"], "?")
 
-    msg = f"""{emoji} <b>NEW: {strat['strategy'].replace('_', ' ')}</b>
+    # Estimate starting balance (total profit / days * rough multiplier)
+    # This is a rough estimate - they likely started small and compounded
+    estimated_start = wallet.get("estimated_start", "Unknown")
 
-<b>Address:</b> <code>{wallet['address']}</code>
-<b>Account Age:</b> {wallet['account_age_days']:.0f} days
-<b>Velocity:</b> ${wallet['velocity']:,.0f}/day
-<b>Total Profit:</b> ${wallet['total_profit']:,.0f}
-<b>Trades/Week:</b> {wallet['trades_this_week']}
+    msg = f"""{emoji} NEW: {strat['strategy'].replace('_', ' ')}
 
-<b>Strategy Analysis:</b>
-• Confidence: {strat['confidence']:.0f}%
-• Crypto: {strat['crypto_pct']:.0%}
-• Avg Trade: ${strat['avg_trade_size']:,.0f}
-• Markets: {strat['unique_markets']}
-• Buy/Sell: {strat['buy_sell_ratio']:.2f}"""
+Address: {wallet['address']}
+Age: {wallet['account_age_days']:.0f} days
+Velocity: ${wallet['velocity']:,.0f}/day
+Profit: ${wallet['total_profit']:,.0f}
+Est Start: {estimated_start}
+Trades/wk: {wallet['trades_this_week']}
+
+Strategy:
+- Confidence: {strat['confidence']:.0f}%
+- Crypto focus: {strat['crypto_pct']:.0%}
+- Avg trade: ${strat['avg_trade_size']:.0f}
+- Markets: {strat['unique_markets']}"""
 
     if strat.get("details"):
-        msg += "\n\n<b>Edge:</b>"
-        for k, v in strat["details"].items():
-            msg += f"\n• {k}: {v}"
+        edge = strat["details"].get("edge", "")
+        if edge:
+            msg += f"\n- Edge: {edge}"
 
-    msg += f"\n\n<a href=\"https://polymarket.com/profile/{wallet['address']}\">View Profile</a>"
+    msg += f"\n\nhttps://polymarket.com/profile/{wallet['address']}"
 
     return msg
 
@@ -282,6 +286,18 @@ async def analyze_wallet(scanner: WalletScanner, address: str, leaderboard_profi
         if strategy_info["strategy"] not in ALERT_STRATEGIES:
             return None
 
+        # Estimate starting balance from early trade sizes
+        # Sort by timestamp to get earliest trades
+        sorted_activity = sorted(activity, key=lambda x: float(x.get("timestamp", 0)))
+        early_trades = sorted_activity[:10]  # First 10 trades
+        early_sizes = [float(t.get("usdcSize", 0) or 0) for t in early_trades]
+        if early_sizes:
+            # Estimate: avg early trade size * 10-20 (typical position sizing)
+            avg_early = sum(early_sizes) / len(early_sizes)
+            estimated_start = f"~${avg_early * 15:,.0f}"
+        else:
+            estimated_start = "Unknown"
+
         return {
             "address": address,
             "account_age_days": account_age_days,
@@ -289,6 +305,7 @@ async def analyze_wallet(scanner: WalletScanner, address: str, leaderboard_profi
             "trades_this_week": trades_this_week,
             "total_profit": leaderboard_profit,
             "strategy_info": strategy_info,
+            "estimated_start": estimated_start,
         }
 
     except Exception as e:
