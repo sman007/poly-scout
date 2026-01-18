@@ -147,8 +147,9 @@ def classify_strategy(activity: list) -> dict:
     confidence = 0
     details = {}
 
-    # Crypto arbitrage: High crypto %, small sizes, high frequency, balanced buy/sell
-    if crypto_pct >= 0.7 and avg_size < 100 and 0.8 <= buy_sell_ratio <= 1.25:
+    # Crypto arbitrage: High crypto %, small sizes, high frequency
+    # Note: Arb bots buy YES+NO so buy/sell ratio varies
+    if crypto_pct >= 0.6 and avg_size < 200:
         strategy = STRATEGY_CRYPTO_ARB
         confidence = min(crypto_pct * 100, 95)
         details = {
@@ -157,8 +158,8 @@ def classify_strategy(activity: list) -> dict:
             "edge": "Buy YES+NO < $1, profit on resolution",
         }
 
-    # Market maker: Balanced buy/sell, many markets, consistent sizes
-    elif 0.7 <= buy_sell_ratio <= 1.4 and unique_markets > 20:
+    # Market maker: Many unique markets, decent activity
+    elif unique_markets > 15:
         strategy = STRATEGY_MARKET_MAKER
         confidence = 70
         details = {
