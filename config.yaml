@@ -1,0 +1,68 @@
+# poly-scout Configuration File
+# This file contains default configuration settings that can be overridden
+# by environment variables or command-line arguments
+
+# API Endpoints
+polymarket_data_api: "https://data-api.polymarket.com"
+polymarket_gamma_api: "https://gamma-api.polymarket.com"
+
+# Scanning Thresholds
+# Minimum profit (USD) to identify emerging traders
+scan_min_profit: 5000.0
+
+# Minimum win rate (0.0-1.0) to identify successful traders
+scan_min_win_rate: 0.85
+
+# Maximum account age in days (focus on newer traders)
+scan_max_age_days: 60
+
+# Rate Limiting
+# Requests per second to stay within API limits
+rate_limit_rps: 5
+
+# Burst capacity for handling spikes
+rate_limit_burst: 10
+
+# Output Settings
+# Directory for storing scan results and reports
+output_dir: "./output"
+
+# Directory for persistent data storage
+data_dir: "./data"
+
+# Analysis Configuration
+# Minimum trades required for statistical significance
+min_trades_for_analysis: 10
+
+# Historical lookback period in days
+lookback_days: 90
+
+# Watchlist Settings
+# Path to watchlist file
+watchlist_path: "./data/watchlist.json"
+
+# Logging Configuration
+# Valid levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level: "INFO"
+
+# Optional log file path (null = console only)
+log_file: null
+
+# Advanced Settings (optional)
+# These settings can be adjusted for fine-tuning
+
+# Cache settings
+# cache_ttl: 3600  # Cache time-to-live in seconds
+# cache_enabled: true
+
+# Performance settings
+# max_concurrent_requests: 10
+# request_timeout: 30
+
+# Alert settings
+# alert_on_new_trader: true
+# alert_profit_threshold: 10000
+
+# Export settings
+# default_export_format: "json"
+# include_timestamps: true
