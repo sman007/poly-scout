@@ -1,0 +1,15 @@
+[Unit]
+Description=Poly-Scout Wallet Scanner Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/poly-scout
+Environment=PATH=/root/poly-scout/venv/bin:/usr/bin
+ExecStart=/root/poly-scout/venv/bin/python -m src.daemon
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
