@@ -82,7 +82,7 @@ async def send_telegram(message: str):
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
 
     try:
         async with httpx.AsyncClient() as client:
@@ -208,13 +208,9 @@ def classify_strategy(activity: list) -> dict:
 def format_alert(wallet: dict) -> str:
     """Format alert message with strategy analysis."""
     strat = wallet["strategy_info"]
-    emoji = STRATEGY_EMOJI.get(strat["strategy"], "?")
-
-    # Estimate starting balance (total profit / days * rough multiplier)
-    # This is a rough estimate - they likely started small and compounded
     estimated_start = wallet.get("estimated_start", "Unknown")
 
-    msg = f"""{emoji} NEW: {strat['strategy'].replace('_', ' ')}
+    msg = f"""[CRYPTO ARB DETECTED]
 
 Address: {wallet['address']}
 Age: {wallet['account_age_days']:.0f} days
@@ -223,18 +219,14 @@ Profit: ${wallet['total_profit']:,.0f}
 Est Start: {estimated_start}
 Trades/wk: {wallet['trades_this_week']}
 
-Strategy:
+Strategy Analysis:
 - Confidence: {strat['confidence']:.0f}%
 - Crypto focus: {strat['crypto_pct']:.0%}
 - Avg trade: ${strat['avg_trade_size']:.0f}
-- Markets: {strat['unique_markets']}"""
+- Markets: {strat['unique_markets']}
+- Edge: Buy YES+NO < $1
 
-    if strat.get("details"):
-        edge = strat["details"].get("edge", "")
-        if edge:
-            msg += f"\n- Edge: {edge}"
-
-    msg += f"\n\nhttps://polymarket.com/profile/{wallet['address']}"
+Profile: https://polymarket.com/profile/{wallet['address']}"""
 
     return msg
 
