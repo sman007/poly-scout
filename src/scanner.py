@@ -558,6 +558,157 @@ class WalletScanner:
 
 
 # ============================================================================
+# Saturation Analysis
+# ============================================================================
+
+async def find_similar_wallets(
+    scanner: 'WalletScanner',
+    reference_address: str,
+    strategy_params: dict,
+    leaderboard: List[WalletProfile],
+    max_wallets_to_check: int = 50
+) -> dict:
+    """
+    Find wallets with similar trading patterns to assess saturation.
+
+    Args:
+        scanner: WalletScanner instance
+        reference_address: The wallet we're analyzing
+        strategy_params: Strategy parameters from analyze_strategy_deep()
+        leaderboard: Pre-fetched leaderboard
+        max_wallets_to_check: Max wallets to analyze for similarity
+
+    Returns:
+        Saturation analysis with wallet count and estimated capital
+    """
+    similar_wallets = []
+    total_competing_capital = 0.0
+
+    # Get reference wallet's key characteristics
+    ref_strategy = strategy_params.get("likely_strategy", "UNKNOWN")
+    ref_crypto_pct = strategy_params.get("crypto_15m_pct", 0)
+    ref_combined_avg = strategy_params.get("combined_yes_no_avg", 0)
+    ref_markets = set(strategy_params.get("markets", []))
+
+    # Only look for similar wallets if it's a recognized strategy
+    if ref_strategy == "UNKNOWN":
+        return {
+            "wallet_count": 0,
+            "similar_wallets": [],
+            "total_competing_capital": 0,
+            "trend": "unknown"
+        }
+
+    # Check other profitable wallets
+    for profile in leaderboard[:max_wallets_to_check]:
+        if profile.address == reference_address:
+            continue
+
+        if profile.profit < 1000:  # Skip small accounts
+            continue
+
+        try:
+            # Fetch their activity
+            url = f"{scanner.BASE_URL}/activity"
+            activity = await scanner._request("GET", url, {"user": profile.address, "limit": 200})
+
+            if not activity or len(activity) < 10:
+                continue
+
+            # Quick similarity check - are they trading similar markets?
+            their_markets = set()
+            crypto_count = 0
+
+            for trade in activity:
+                title = trade.get("title", "").lower()
+                slug = trade.get("slug", "") or trade.get("market_id", "")
+                their_markets.add(slug)
+
+                if "up or down" in title and "15" in title:
+                    crypto_count += 1
+
+            their_crypto_pct = crypto_count / len(activity) if activity else 0
+
+            # Similarity criteria:
+            # 1. Similar market focus (both crypto 15m heavy or both not)
+            # 2. Similar markets traded (some overlap)
+            market_overlap = len(ref_markets & their_markets) / max(len(ref_markets), 1)
+
+            is_similar = False
+
+            # For BINANCE_SIGNAL / SPREAD_CAPTURE: check crypto focus
+            if ref_strategy in ["BINANCE_SIGNAL", "SPREAD_CAPTURE"]:
+                if their_crypto_pct > 0.5 and ref_crypto_pct > 0.5:
+                    is_similar = True
+
+            # Generic check: market overlap
+            if market_overlap > 0.3:
+                is_similar = True
+
+            if is_similar:
+                similar_wallets.append({
+                    "address": profile.address,
+                    "profit": profile.profit,
+                    "market_overlap": market_overlap,
+                })
+                total_competing_capital += profile.profit
+
+            await asyncio.sleep(0.3)  # Rate limit
+
+        except Exception as e:
+            continue
+
+    return {
+        "wallet_count": len(similar_wallets),
+        "similar_wallets": similar_wallets[:10],  # Top 10
+        "total_competing_capital": round(total_competing_capital, 0),
+        "trend": "unknown"  # Will be updated from history
+    }
+
+
+def update_saturation_trend(
+    history: dict,
+    strategy: str,
+    current_count: int,
+    current_capital: float
+) -> str:
+    """
+    Update saturation history and determine trend.
+
+    Returns:
+        "increasing", "stable", or "decreasing"
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if strategy not in history:
+        history[strategy] = {}
+
+    history[strategy][today] = {
+        "wallets": current_count,
+        "capital": current_capital
+    }
+
+    # Keep only last 30 days
+    dates = sorted(history[strategy].keys())
+    if len(dates) > 30:
+        for old_date in dates[:-30]:
+            del history[strategy][old_date]
+
+    # Determine trend (compare to 7 days ago if available)
+    dates = sorted(history[strategy].keys())
+    if len(dates) >= 7:
+        week_ago_data = history[strategy].get(dates[-7], {})
+        week_ago_count = week_ago_data.get("wallets", current_count)
+
+        if current_count > week_ago_count * 1.2:
+            return "increasing"
+        elif current_count < week_ago_count * 0.8:
+            return "decreasing"
+
+    return "stable"
+
+
+# ============================================================================
 # Convenience Functions
 # ============================================================================
 
