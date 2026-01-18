@@ -372,7 +372,7 @@ class WalletScanner:
         """
         Fetch comprehensive statistics for a specific wallet.
 
-        Derives stats from activity data since there's no direct user endpoint.
+        Uses positions API to get accurate PnL and win rate data.
 
         Args:
             address: Wallet address
@@ -381,49 +381,49 @@ class WalletScanner:
             WalletProfile with detailed stats, or None if not found
         """
         try:
-            # Fetch activity to derive stats
-            trades = await self.fetch_wallet_activity(address, limit=500)
+            # Fetch positions for accurate PnL data
+            url = f"{self.BASE_URL}/positions"
+            params = {"user": address, "limit": 500}
+            positions = await self._request("GET", url, params)
 
-            if not trades:
-                print(f"No activity found for {address}")
+            if not positions:
                 return None
 
-            # Calculate stats from trades
-            total_profit = sum(t.profit for t in trades)
-            winning_trades = [t for t in trades if t.profit > 0]
-            win_rate = len(winning_trades) / len(trades) if trades else 0
+            # Calculate stats from positions
+            winning = [p for p in positions if float(p.get('cashPnl', 0) or 0) > 0]
+            losing = [p for p in positions if float(p.get('cashPnl', 0) or 0) < 0]
+            total_positions = len(winning) + len(losing)
+
+            win_rate = len(winning) / total_positions if total_positions > 0 else 0
+
+            # Total PnL
+            total_pnl = sum(float(p.get('cashPnl', 0) or 0) for p in positions)
+
+            # Volume
+            volume = sum(float(p.get('initialValue', 0) or 0) for p in positions)
 
             # Get unique markets
-            markets = set(t.market_id for t in trades if t.market_id)
-
-            # Calculate volume
-            volume = sum(t.size * t.price for t in trades if t.size and t.price)
+            markets = set(p.get('conditionId', '') for p in positions if p.get('conditionId'))
 
             # Position sizes
-            sizes = [t.size for t in trades if t.size > 0]
+            sizes = [float(p.get('initialValue', 0) or 0) for p in positions]
             avg_size = sum(sizes) / len(sizes) if sizes else 0
 
-            # Profits
-            profits = [t.profit for t in trades]
-            largest_win = max(profits) if profits else 0
-            largest_loss = min(profits) if profits else 0
-
-            # First seen
-            timestamps = [t.timestamp for t in trades if t.timestamp]
-            first_seen = min(timestamps) if timestamps else None
+            # Largest win/loss
+            pnls = [float(p.get('cashPnl', 0) or 0) for p in positions]
+            largest_win = max(pnls) if pnls else 0
+            largest_loss = min(pnls) if pnls else 0
 
             profile = WalletProfile(
                 address=address,
-                profit=total_profit,
+                profit=total_pnl,
                 win_rate=win_rate,
-                trade_count=len(trades),
+                trade_count=total_positions,
                 markets_traded=len(markets),
                 volume=volume,
                 avg_position_size=avg_size,
                 largest_win=largest_win,
                 largest_loss=largest_loss,
-                first_seen=first_seen,
-                trades=trades,
             )
 
             return profile
