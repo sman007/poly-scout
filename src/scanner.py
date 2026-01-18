@@ -298,15 +298,16 @@ class WalletScanner:
             traders = data if isinstance(data, list) else data.get('traders', [])
 
             for idx, trader in enumerate(traders[:limit], start=1):
+                # Polymarket API uses: proxyWallet, userName, pnl, vol
                 profile = WalletProfile(
-                    address=trader.get('address', ''),
-                    username=trader.get('username') or trader.get('name'),
-                    profit=float(trader.get('profit', 0) or trader.get('pnl', 0) or 0),
-                    win_rate=float(trader.get('win_rate', 0) or trader.get('winRate', 0) or 0),
-                    trade_count=int(trader.get('trade_count', 0) or trader.get('trades', 0) or 0),
-                    markets_traded=int(trader.get('markets_traded', 0) or trader.get('markets', 0) or 0),
-                    volume=float(trader.get('volume', 0) or 0),
-                    rank=idx,
+                    address=trader.get('proxyWallet') or trader.get('address', ''),
+                    username=trader.get('userName') or trader.get('username') or trader.get('name'),
+                    profit=float(trader.get('pnl', 0) or trader.get('profit', 0) or 0),
+                    win_rate=0.0,  # Not in leaderboard, must fetch from activity
+                    trade_count=0,  # Not in leaderboard
+                    markets_traded=0,
+                    volume=float(trader.get('vol', 0) or trader.get('volume', 0) or 0),
+                    rank=int(trader.get('rank', idx)),
                 )
                 profiles.append(profile)
 
@@ -480,31 +481,38 @@ class WalletScanner:
         # Fetch leaderboard
         leaderboard = await self.fetch_leaderboard(limit=leaderboard_limit)
 
-        # Filter by profit and win rate first (quick filters)
+        # Filter by profit first (win_rate not available in leaderboard)
         candidates = [
             profile for profile in leaderboard
-            if profile.profit >= min_profit and profile.win_rate >= min_win_rate
+            if profile.profit >= min_profit
         ]
 
-        print(f"Found {len(candidates)} candidates meeting profit/win-rate criteria")
+        print(f"Found {len(candidates)} candidates meeting profit criteria (will check win_rate from activity)")
 
         # Fetch detailed stats for each candidate to check age
         emerging_traders = []
 
         for i, candidate in enumerate(candidates, start=1):
-            print(f"Analyzing candidate {i}/{len(candidates)}: {candidate.address}")
+            print(f"Analyzing candidate {i}/{len(candidates)}: {candidate.address[:16]}...")
 
-            # Get detailed stats including first_seen
+            # Get detailed stats including first_seen and win_rate
             detailed_profile = await self.fetch_wallet_stats(candidate.address)
 
-            if detailed_profile and detailed_profile.age_days is not None:
-                if detailed_profile.age_days <= max_age_days:
-                    print(f"  -> MATCH! Age: {detailed_profile.age_days} days, Profit: ${detailed_profile.profit:.2f}")
+            if detailed_profile:
+                age_ok = detailed_profile.age_days is None or detailed_profile.age_days <= max_age_days
+                win_rate_ok = detailed_profile.win_rate >= min_win_rate
+
+                if age_ok and win_rate_ok:
+                    # Preserve leaderboard profit (more accurate than activity-derived)
+                    detailed_profile.profit = candidate.profit
+                    print(f"  -> MATCH! Win rate: {detailed_profile.win_rate:.1%}, Age: {detailed_profile.age_days or '?'} days, Profit: ${detailed_profile.profit:.2f}")
                     emerging_traders.append(detailed_profile)
+                elif not win_rate_ok:
+                    print(f"  -> Win rate too low ({detailed_profile.win_rate:.1%})")
                 else:
                     print(f"  -> Too old ({detailed_profile.age_days} days)")
             else:
-                print(f"  -> Could not determine age")
+                print(f"  -> Could not fetch activity")
 
         # Sort by profit (descending)
         emerging_traders.sort(key=lambda x: x.profit, reverse=True)
