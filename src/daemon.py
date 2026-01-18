@@ -1,12 +1,13 @@
 """
 Auto-pilot daemon for poly-scout.
-Scans for high-frequency crypto arbitrage traders like 0x8dxd.
+Detects explosive growth patterns in Polymarket wallets.
+Finds emerging alpha traders BEFORE they become famous.
 """
 
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 os.environ['PYTHONUNBUFFERED'] = '1'
@@ -25,12 +26,31 @@ def log(msg: str):
 
 # Configuration
 SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
-MIN_PROFIT = float(os.getenv("SCAN_MIN_PROFIT", "10000"))
-MIN_TRADES_24H = int(os.getenv("SCAN_MIN_TRADES_24H", "50"))  # High frequency filter
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Tier 1: Rising Star - New wallet exploding
+TIER1_MIN_WEEKLY_PNL = float(os.getenv("TIER1_MIN_WEEKLY_PNL", "2000"))
+TIER1_MAX_ACCOUNT_AGE_DAYS = int(os.getenv("TIER1_MAX_ACCOUNT_AGE_DAYS", "14"))
+TIER1_MIN_TRADES_WEEK = int(os.getenv("TIER1_MIN_TRADES_WEEK", "30"))
+
+# Tier 2: Accelerating - Sudden growth spike
+TIER2_ACCELERATION_FACTOR = float(os.getenv("TIER2_ACCELERATION_FACTOR", "3.0"))
+TIER2_MIN_WEEKLY_PNL = float(os.getenv("TIER2_MIN_WEEKLY_PNL", "1000"))
+TIER2_MAX_ACCOUNT_AGE_DAYS = int(os.getenv("TIER2_MAX_ACCOUNT_AGE_DAYS", "60"))
+
+# Tier 3: Consistent Grinder - Sustainable early edge
+TIER3_MIN_WEEKLY_PNL = float(os.getenv("TIER3_MIN_WEEKLY_PNL", "3000"))
+TIER3_MAX_TOTAL_PROFIT = float(os.getenv("TIER3_MAX_TOTAL_PROFIT", "50000"))
+
+# Minimum profit to even consider (filters out noise)
+MIN_LEADERBOARD_PROFIT = float(os.getenv("MIN_LEADERBOARD_PROFIT", "1000"))
+
 SEEN_WALLETS_FILE = Path("/root/poly-scout/data/seen_wallets.json")
+
+# Tier display info
+TIER_NAMES = {1: "RISING STAR", 2: "ACCELERATING", 3: "CONSISTENT GRINDER"}
+TIER_EMOJI = {1: "🚀", 2: "📈", 3: "💪"}
 
 
 def load_seen_wallets() -> set:
@@ -68,61 +88,94 @@ async def send_telegram(message: str):
         log(f"[TG] Error: {e}")
 
 
-def format_notification(wallet: dict) -> str:
-    return f"""🚨 <b>Potential Crypto Arb Bot Found!</b>
+def format_growth_notification(wallet: dict) -> str:
+    tier = wallet["tier"]
+    growth_str = f"{wallet['growth_rate']:.1f}x" if wallet['growth_rate'] != float('inf') else "NEW"
+
+    return f"""{TIER_EMOJI[tier]} <b>Tier {tier}: {TIER_NAMES[tier]}</b>
 
 <b>Address:</b> <code>{wallet['address']}</code>
-<b>Profit:</b> ${wallet['profit']:,.0f}
-<b>24h Trades:</b> {wallet['trades_24h']}
-<b>Crypto %:</b> {wallet['crypto_pct']:.0%}
-<b>Avg Trade:</b> ${wallet['avg_trade_size']:,.0f}
+<b>Account Age:</b> {wallet['account_age_days']:.0f} days
+<b>This Week:</b> ${wallet['this_week_pnl']:,.0f}
+<b>Last Week:</b> ${wallet['last_week_pnl']:,.0f}
+<b>Growth:</b> {growth_str}
+<b>Trades/Week:</b> {wallet['trades_this_week']}
+<b>Total Profit:</b> ${wallet['total_profit']:,.0f}
 
 <a href="https://polymarket.com/profile/{wallet['address']}">View Profile</a>
 """
 
 
-async def analyze_wallet(scanner: WalletScanner, address: str, leaderboard_profit: float) -> dict | None:
+async def analyze_wallet_growth(scanner: WalletScanner, address: str, leaderboard_profit: float) -> dict | None:
     """
-    Analyze a wallet to see if it's a crypto arb bot.
-    Returns wallet info if it matches criteria, None otherwise.
+    Analyze wallet for explosive growth patterns.
+    Returns wallet info with tier classification if interesting, None otherwise.
     """
     try:
-        # Get recent activity
         url = f"{scanner.BASE_URL}/activity"
         activity = await scanner._request("GET", url, {"user": address, "limit": 500})
 
-        if not activity or len(activity) < 10:
+        if not activity or len(activity) < 5:
             return None
 
-        # Count trades in last 24 hours
+        # Parse timestamps
         now = datetime.now().timestamp()
-        day_ago = now - 86400
-        recent_trades = [a for a in activity if float(a.get("timestamp", 0)) > day_ago]
-        trades_24h = len(recent_trades)
+        week_ago = now - 7 * 86400
+        two_weeks_ago = now - 14 * 86400
 
-        # Count crypto UP/DOWN trades
-        crypto_keywords = ["Up or Down", "Bitcoin", "Ethereum", "Solana", "XRP", "BTC", "ETH", "SOL"]
-        crypto_trades = [a for a in activity if any(kw in a.get("title", "") for kw in crypto_keywords)]
-        crypto_pct = len(crypto_trades) / len(activity) if activity else 0
+        # Get first trade timestamp (account age)
+        timestamps = [float(a.get("timestamp", 0)) for a in activity if a.get("timestamp")]
+        if not timestamps:
+            return None
 
-        # Calculate average trade size
-        sizes = [float(a.get("usdcSize", 0) or 0) for a in activity if a.get("usdcSize")]
-        avg_size = sum(sizes) / len(sizes) if sizes else 0
+        first_trade = min(timestamps)
+        account_age_days = (now - first_trade) / 86400
 
-        # Check if this looks like a crypto arb bot
-        is_high_frequency = trades_24h >= MIN_TRADES_24H
-        is_crypto_focused = crypto_pct >= 0.5  # At least 50% crypto trades
-        is_small_size = avg_size < 500  # Small trade sizes typical of arb
-        is_profitable = leaderboard_profit >= MIN_PROFIT
+        # Calculate this week's profit
+        this_week_trades = [a for a in activity if float(a.get("timestamp", 0)) > week_ago]
+        this_week_pnl = sum(float(a.get("pnl", 0) or 0) for a in this_week_trades)
 
-        if is_high_frequency and is_crypto_focused and is_profitable:
+        # Calculate last week's profit
+        last_week_trades = [a for a in activity
+                            if two_weeks_ago < float(a.get("timestamp", 0)) <= week_ago]
+        last_week_pnl = sum(float(a.get("pnl", 0) or 0) for a in last_week_trades)
+
+        # Trade frequency this week
+        trades_this_week = len(this_week_trades)
+
+        # Determine tier
+        tier = None
+
+        # Tier 1: Rising Star - New wallet exploding
+        if (account_age_days < TIER1_MAX_ACCOUNT_AGE_DAYS
+            and this_week_pnl > TIER1_MIN_WEEKLY_PNL
+            and trades_this_week > TIER1_MIN_TRADES_WEEK):
+            tier = 1
+
+        # Tier 2: Accelerating - Sudden growth spike
+        elif (last_week_pnl > 0
+              and this_week_pnl > TIER2_ACCELERATION_FACTOR * last_week_pnl
+              and this_week_pnl > TIER2_MIN_WEEKLY_PNL
+              and account_age_days < TIER2_MAX_ACCOUNT_AGE_DAYS):
+            tier = 2
+
+        # Tier 3: Consistent Grinder - Sustainable early edge
+        elif (this_week_pnl > TIER3_MIN_WEEKLY_PNL
+              and last_week_pnl > TIER3_MIN_WEEKLY_PNL
+              and leaderboard_profit < TIER3_MAX_TOTAL_PROFIT):
+            tier = 3
+
+        if tier:
+            growth_rate = this_week_pnl / last_week_pnl if last_week_pnl > 0 else float('inf')
             return {
                 "address": address,
-                "profit": leaderboard_profit,
-                "trades_24h": trades_24h,
-                "crypto_pct": crypto_pct,
-                "avg_trade_size": avg_size,
-                "is_arb_bot": True
+                "tier": tier,
+                "account_age_days": account_age_days,
+                "this_week_pnl": this_week_pnl,
+                "last_week_pnl": last_week_pnl,
+                "growth_rate": growth_rate,
+                "trades_this_week": trades_this_week,
+                "total_profit": leaderboard_profit,
             }
 
         return None
@@ -133,52 +186,85 @@ async def analyze_wallet(scanner: WalletScanner, address: str, leaderboard_profi
 
 
 async def run_scan() -> list[dict]:
-    """Scan for crypto arb bots."""
-    log(f"[{datetime.now().strftime('%H:%M:%S')}] Scanning for crypto arb bots...")
-    log(f"  Filters: profit>${MIN_PROFIT:,.0f}, trades_24h>{MIN_TRADES_24H}, crypto>50%")
+    """Scan for explosive growth wallets."""
+    log(f"[{datetime.now().strftime('%H:%M:%S')}] Scanning for explosive growth...")
 
     async with WalletScanner() as scanner:
-        # Get leaderboard - check more wallets
-        leaderboard = await scanner.fetch_leaderboard(limit=200)
+        # Fetch both all-time and weekly leaderboards to catch new risers
+        log("  Fetching leaderboards (all-time + weekly)...")
 
-        # Filter by minimum profit
-        candidates = [p for p in leaderboard if p.profit >= MIN_PROFIT]
-        log(f"  {len(candidates)} candidates with profit >= ${MIN_PROFIT:,.0f}")
+        leaderboard_all = await scanner.fetch_leaderboard(limit=200, period="all")
+        await asyncio.sleep(0.5)  # Rate limit
+        leaderboard_week = await scanner.fetch_leaderboard(limit=200, period="week")
+
+        # Combine and dedupe - weekly leaders might be new hot wallets not on all-time yet
+        all_candidates = {}
+        for p in leaderboard_all:
+            if p.profit >= MIN_LEADERBOARD_PROFIT:
+                all_candidates[p.address] = p
+        for p in leaderboard_week:
+            if p.address not in all_candidates and p.profit >= MIN_LEADERBOARD_PROFIT / 2:
+                all_candidates[p.address] = p
+
+        log(f"  {len(all_candidates)} unique candidates (profit >= ${MIN_LEADERBOARD_PROFIT:,.0f})")
 
         results = []
         checked = 0
 
-        for candidate in candidates[:50]:  # Check top 50
+        # Sort by profit descending but check more wallets
+        sorted_candidates = sorted(all_candidates.values(), key=lambda x: x.profit, reverse=True)
+
+        for candidate in sorted_candidates[:100]:  # Check top 100
             checked += 1
 
-            result = await analyze_wallet(scanner, candidate.address, candidate.profit)
+            result = await analyze_wallet_growth(scanner, candidate.address, candidate.profit)
 
             if result:
-                log(f"  ✓ MATCH: {candidate.address[:12]}... {result['trades_24h']} trades/24h, {result['crypto_pct']:.0%} crypto")
+                tier = result["tier"]
+                log(f"  ✓ T{tier} {TIER_NAMES[tier]}: {candidate.address[:12]}... "
+                    f"age={result['account_age_days']:.0f}d, "
+                    f"week=${result['this_week_pnl']:,.0f}, "
+                    f"growth={result['growth_rate']:.1f}x")
                 results.append(result)
 
             # Rate limit
             await asyncio.sleep(0.5)
 
-        log(f"  Checked {checked} wallets, found {len(results)} arb bot candidates")
+        log(f"  Checked {checked} wallets, found {len(results)} growth candidates")
+
+        # Sort results by tier (lower = higher priority)
+        results.sort(key=lambda x: x["tier"])
         return results
 
 
 async def daemon_loop():
-    log("=" * 50)
-    log("  POLY-SCOUT CRYPTO ARB HUNTER")
-    log("=" * 50)
-    log(f"  Looking for: High-frequency crypto traders")
-    log(f"  Min profit: ${MIN_PROFIT:,.0f}")
-    log(f"  Min trades/24h: {MIN_TRADES_24H}")
+    log("=" * 60)
+    log("  POLY-SCOUT: EXPLOSIVE GROWTH DETECTOR")
+    log("=" * 60)
+    log("  Looking for: Emerging alpha traders")
+    log("")
+    log("  Tier 1 (Rising Star):")
+    log(f"    - Account < {TIER1_MAX_ACCOUNT_AGE_DAYS} days old")
+    log(f"    - Week PnL > ${TIER1_MIN_WEEKLY_PNL:,.0f}")
+    log(f"    - Trades/week > {TIER1_MIN_TRADES_WEEK}")
+    log("")
+    log("  Tier 2 (Accelerating):")
+    log(f"    - Growth > {TIER2_ACCELERATION_FACTOR}x week-over-week")
+    log(f"    - Week PnL > ${TIER2_MIN_WEEKLY_PNL:,.0f}")
+    log(f"    - Account < {TIER2_MAX_ACCOUNT_AGE_DAYS} days old")
+    log("")
+    log("  Tier 3 (Consistent Grinder):")
+    log(f"    - Week PnL > ${TIER3_MIN_WEEKLY_PNL:,.0f} for 2+ weeks")
+    log(f"    - Total profit < ${TIER3_MAX_TOTAL_PROFIT:,.0f}")
+    log("")
     log(f"  Scan interval: {SCAN_INTERVAL_MINUTES} min")
     log(f"  Telegram: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}")
-    log("=" * 50)
+    log("=" * 60)
 
     seen_wallets = load_seen_wallets()
     log(f"Loaded {len(seen_wallets)} seen wallets")
 
-    await send_telegram("🟢 <b>Poly-Scout Started</b>\n\nHunting for crypto arb bots...")
+    await send_telegram("🟢 <b>Poly-Scout v2 Started</b>\n\nHunting for explosive growth wallets...")
 
     while True:
         try:
@@ -186,13 +272,13 @@ async def daemon_loop():
             new_wallets = [w for w in results if w["address"] not in seen_wallets]
 
             if new_wallets:
-                log(f"🚨 {len(new_wallets)} NEW arb bot(s) found!")
+                log(f"🚨 {len(new_wallets)} NEW growth wallet(s) found!")
                 for wallet in new_wallets:
-                    await send_telegram(format_notification(wallet))
+                    await send_telegram(format_growth_notification(wallet))
                     seen_wallets.add(wallet["address"])
                 save_seen_wallets(seen_wallets)
             else:
-                log(f"No new bots ({len(results)} matched, already seen)")
+                log(f"No new wallets ({len(results)} matched criteria, already seen)")
 
         except Exception as e:
             log(f"ERROR: {e}")
