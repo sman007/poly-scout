@@ -274,20 +274,25 @@ def analyze_strategy_deep(activity: list) -> dict:
     confidence = 0.0
     edge_explanation = ""
 
-    # BINANCE_SIGNAL: Combined avg > $1, high crypto 15m focus, directional
-    if combined_avg > 1.0 and crypto_15m_pct > 0.5:
+    # BINANCE_SIGNAL: High crypto 15m focus (arb OR directional)
+    # Combined avg > $1 = arb pattern, otherwise directional betting
+    if crypto_15m_pct > 0.5:
         likely_strategy = STRATEGY_BINANCE_SIGNAL
-        confidence = min(0.5 + (combined_avg - 1.0) * 2 + crypto_15m_pct * 0.3, 0.95)
-        edge_explanation = "Binance price moves before Polymarket odds adjust"
+        if combined_avg > 1.0:
+            confidence = min(0.5 + (combined_avg - 1.0) * 2 + crypto_15m_pct * 0.3, 0.95)
+            edge_explanation = "Binance signal arb - buying both sides > $1"
+        else:
+            confidence = min(0.4 + crypto_15m_pct * 0.5, 0.90)
+            edge_explanation = "Binance signal directional - betting on price direction"
 
-    # SPREAD_CAPTURE: Combined avg < $1, buying both sides
-    elif combined_avg > 0 and combined_avg < 1.0 and yes_prices and no_prices:
+    # SPREAD_CAPTURE: Combined avg < $1, buying both sides (non-crypto markets)
+    elif combined_avg > 0 and combined_avg < 1.0 and yes_prices and no_prices and is_arb_pattern:
         likely_strategy = STRATEGY_SPREAD_CAPTURE
         confidence = min(0.5 + (1.0 - combined_avg) * 2, 0.95)
         edge_explanation = "Buy YES+NO < $1, guaranteed profit on resolution"
 
     # Check for other patterns (sports, political)
-    elif crypto_15m_pct < 0.3:
+    if likely_strategy == STRATEGY_UNKNOWN:
         sports_keywords = ["NFL", "NBA", "MLB", "NHL", "Game", "Match", "Win", "Super Bowl", "vs.", "Spread"]
         political_keywords = ["President", "Election", "Trump", "Biden", "Congress"]
 
