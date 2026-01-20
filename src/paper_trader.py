@@ -443,7 +443,14 @@ Record: {p['wins']}W / {p['losses']}L ({win_rate:.0f}%)"""
             lines.append("RECENT TRADES:")
             lines.append("-" * 50)
             for pos in reversed(recent):
-                status = "WIN" if pos["status"] == "won" else "LOSS"
+                if pos["status"] == "won":
+                    status = "WIN"
+                elif pos["status"] == "lost":
+                    status = "LOSS"
+                elif "profit" in pos["status"]:
+                    status = "PROFIT"
+                else:
+                    status = pos["status"].upper()
                 lines.append(f"  [{status}] {pos['title'][:35]}... P&L: ${pos['pnl']:+,.2f}")
 
         return "\n".join(lines)
