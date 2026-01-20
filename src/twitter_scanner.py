@@ -34,6 +34,7 @@ class TweetSignal:
     market_slug: Optional[str]
     price_mentioned: Optional[float]
     whale_amount: Optional[float]
+    wallet_address: Optional[str]
     signal_type: str  # "market_mention", "price_claim", "whale_alert", "news"
 
 
@@ -50,6 +51,8 @@ class TwitterScanner:
     PM_URL_PATTERN = re.compile(r'polymarket\.com/event/([a-z0-9-]+)', re.IGNORECASE)
     PRICE_PATTERN = re.compile(r'(\d{1,3})%|trading at (\d{1,3})|priced at (\d{1,3})', re.IGNORECASE)
     WHALE_PATTERN = re.compile(r'\$(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:k|m|bet|wager|position)', re.IGNORECASE)
+    WALLET_PATTERN = re.compile(r'0x[a-fA-F0-9]{40}')
+    PROFILE_URL_PATTERN = re.compile(r'polymarket\.com/profile/(0x[a-fA-F0-9]{40})', re.IGNORECASE)
 
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=30, follow_redirects=True)
@@ -196,6 +199,16 @@ class TwitterScanner:
                 elif "m" in text.lower():
                     whale_amount *= 1_000_000
 
+            # Extract wallet addresses (profile URLs first, then raw addresses)
+            wallet_address = None
+            profile_match = self.PROFILE_URL_PATTERN.search(text)
+            if profile_match:
+                wallet_address = profile_match.group(1).lower()
+            else:
+                wallet_match = self.WALLET_PATTERN.search(text)
+                if wallet_match:
+                    wallet_address = wallet_match.group(0).lower()
+
             # Determine signal type
             signal_type = "market_mention"
             if whale_amount and whale_amount >= 10000:
@@ -224,6 +237,7 @@ class TwitterScanner:
                 market_slug=market_slug,
                 price_mentioned=price_mentioned,
                 whale_amount=whale_amount,
+                wallet_address=wallet_address,
                 signal_type=signal_type,
             ))
 

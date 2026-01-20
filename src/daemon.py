@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 
 from src.scanner import WalletScanner, WalletProfile, find_similar_wallets, update_saturation_trend
 from src.sportsbook import SportsbookComparator, SportsbookOpportunity
-from src.twitter_scanner import TwitterScanner, TweetSignal
+from src.twitter_scanner import TwitterScanner
 from src.validator import EdgeValidator, ValidationResult
 from src.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
@@ -565,78 +565,52 @@ async def send_telegram(message: str):
 
 
 def format_alert(wallet: dict) -> str:
-    """Format profit-focused alert message."""
+    """Format compact profit-focused alert message."""
     strat = wallet.get("strategy_params", {})
     profit = wallet.get("profit_analysis", {})
     saturation = wallet.get("saturation", {})
-    replicability = wallet.get("replicability_score", 0)
-    priority = wallet.get("priority_score", 0)
-    resolution_mins = wallet.get("resolution_mins", 1440)
-    daily_compounds = wallet.get("daily_compounds", 1)
-    is_fast = wallet.get("is_fast_resolution", False)
+    source = wallet.get("source", "leaderboard")
 
     strategy_name = strat.get("likely_strategy", "UNKNOWN")
-    emoji = STRATEGY_EMOJI.get(strategy_name, "")
+    verdict = profit.get("verdict", "SKIP")
+
+    # Source tag
+    source_tag = "[X.COM]" if source == "twitter" else "[LEADERBOARD]"
 
     # Speed indicator
-    if is_fast:
-        speed_tag = "[FAST PROFIT]"
-        resolution_str = f"{resolution_mins} min"
-    elif resolution_mins < 60:
-        speed_tag = "[QUICK]"
-        resolution_str = f"{resolution_mins} min"
-    elif resolution_mins < 1440:
-        speed_tag = ""
-        resolution_str = f"{resolution_mins // 60}h"
+    resolution_mins = wallet.get("resolution_mins", 1440)
+    if resolution_mins <= 15:
+        speed = "15min"
+    elif resolution_mins <= 60:
+        speed = "1hr"
+    elif resolution_mins <= 180:
+        speed = "3hr"
     else:
-        speed_tag = "[SLOW]"
-        resolution_str = f"{resolution_mins // 1440}d"
+        speed = f"{resolution_mins // 60}h"
 
-    verdict_emoji = "+" if profit.get("verdict") == "BUILD" else "-"
+    # Build compact message
+    msg = f"""{source_tag} {strategy_name}
 
-    # Format top markets
-    top_markets = strat.get('top_markets', [])
-    top_markets_str = "\n".join([f"  - ${v:,.0f}: {k}" for k, v in top_markets[:3]]) if top_markets else "  (none)"
+PROFIT POTENTIAL
+Est. monthly: ${profit.get('our_monthly_estimate', 0):,.0f}
+Monthly ROI: {profit.get('monthly_roi_pct', 0):.0f}%
+Capital needed: ${profit.get('min_capital_required', 0):,.0f}
+Verdict: {verdict}
 
-    # Trading pattern
-    is_arb = strat.get('is_arb_pattern', False)
-    yes_no = strat.get('yes_no_ratio', 1)
-    pattern = "ARB (both sides)" if is_arb else f"DIRECTIONAL (YES/NO: {yes_no:.1f})"
+HOW IT WORKS
+{strat.get('edge_explanation', 'Unknown strategy')}
+Resolution: {speed}
+Pattern: {"Arb (both sides)" if strat.get('is_arb_pattern') else "Directional"}
+Avg trade: ${strat.get('avg_trade_size', 0):.0f}
 
-    msg = f"""{speed_tag} PROFITABLE STRATEGY
+COMPETITION
+Wallets: {saturation.get('wallet_count', 0)}
+Trend: {saturation.get('trend', 'unknown')}
 
-SPEED (capital turnover)
-Resolution: {resolution_str}
-Compounds: {daily_compounds:.0f}x/day
-Priority: {priority}
-
-PROFIT
-Their daily: ${profit.get('their_daily_profit', 0):,.0f}/day
-Our estimate: ${profit.get('our_daily_estimate', 0):,.0f}/day
-Monthly: ${profit.get('our_monthly_estimate', 0):,.0f}
-Verdict: {profit.get('verdict', 'SKIP')} {verdict_emoji}
-
-STRATEGY
-Type: {emoji} {strategy_name}
-Pattern: {pattern}
-Edge: {strat.get('edge_explanation', 'Unknown')}
-
-TOP MARKETS
-{top_markets_str}
-
-PARAMETERS
-- Avg size: ${strat.get('avg_trade_size', 0):.0f}
-- Frequency: {strat.get('trades_per_hour', 0):.0f}/hour
-- Capital needed: ~${profit.get('min_capital_required', 0):,.0f}
-- Monthly ROI: {profit.get('monthly_roi_pct', 0):.0f}%
-
-SATURATION
-- Competitors: {saturation.get('wallet_count', 0)}
-- Trend: {saturation.get('trend', 'unknown').upper()}
-
-SOURCE
-{wallet['address'][:16]}...
-${wallet['total_profit']:,.0f} profit | {wallet.get('hours_since_trade', 0):.0f}h ago | {replicability}/10
+WALLET
+{wallet['address'][:20]}...
+Total profit: ${wallet['total_profit']:,.0f}
+Last active: {wallet.get('hours_since_trade', 0):.0f}h ago
 
 https://polymarket.com/profile/{wallet['address']}"""
 
@@ -677,44 +651,6 @@ Sport: {opp.sport}
 Resolution: {opp.resolution_time.strftime('%Y-%m-%d %H:%M')}
 
 https://polymarket.com/event/{opp.market_slug}"""
-
-    return msg
-
-
-def format_twitter_alert(signal: TweetSignal, market_info: dict, validation: ValidationResult) -> str:
-    """Format Twitter signal alert."""
-    signal_emoji = {
-        "whale_alert": "[WHALE]",
-        "price_claim": "[PRICE]",
-        "market_mention": "[MENTION]",
-        "news": "[NEWS]"
-    }
-
-    emoji = signal_emoji.get(signal.signal_type, "[?]")
-
-    msg = f"""{emoji} X.COM SIGNAL
-
-@{signal.author}: {signal.text[:200]}...
-
-MARKET: {signal.market_slug or 'Unknown'}
-"""
-
-    if signal.price_mentioned:
-        msg += f"Price mentioned: {signal.price_mentioned:.0%}\n"
-
-    if signal.whale_amount:
-        msg += f"Whale amount: ${signal.whale_amount:,.0f}\n"
-
-    if validation and validation.is_valid:
-        msg += f"""
-VALIDATION
-- Edge: {validation.edge_pct:+.1f}%
-- Liquidity: ${validation.liquidity_usd:,.0f}
-- Expected profit: ${validation.expected_profit:.2f}
-"""
-
-    if signal.market_url:
-        msg += f"\n{signal.market_url}"
 
     return msg
 
@@ -970,66 +906,77 @@ async def run_sportsbook_scan(validator: EdgeValidator) -> list[tuple[Sportsbook
     return validated_opps
 
 
-async def run_twitter_scan(validator: EdgeValidator) -> list[tuple[TweetSignal, dict, ValidationResult]]:
-    """Scan X.com for Polymarket signals and validate."""
-    log(f"[TWITTER] Scanning...")
+async def run_twitter_scan(saturation_history: dict, seen_wallets: set) -> list[dict]:
+    """Scan X.com for wallet addresses and analyze them through existing pipeline."""
+    log(f"[TWITTER] Scanning for wallets...")
 
-    validated_signals = []
+    results = []
 
     try:
         async with TwitterScanner() as scanner:
             signals = await scanner.scan_all()
+            log(f"[TWITTER] Found {len(signals)} signals")
 
-            log(f"[TWITTER] Found {len(signals)} raw signals")
-
+            # Extract unique wallet addresses
+            wallets_found = set()
             for signal in signals:
-                # Skip if no market slug
-                if not signal.market_slug:
-                    continue
+                if signal.wallet_address:
+                    wallets_found.add(signal.wallet_address.lower())
 
-                # Get market info
-                market_info = await scanner.validate_market(signal.market_slug)
-                if not market_info:
-                    continue
+            log(f"[TWITTER] Found {len(wallets_found)} unique wallets")
 
-                # If price mentioned, validate against it
-                if signal.price_mentioned:
-                    # Get current PM price from market info
-                    markets = market_info.get("markets", [])
-                    pm_price = None
-                    for m in markets:
-                        if m.get("active") and not m.get("closed"):
-                            prices = m.get("outcomePrices", "[]")
-                            if isinstance(prices, str):
-                                import json
-                                prices = json.loads(prices)
-                            if prices:
-                                pm_price = float(prices[0])
-                                break
+            if not wallets_found:
+                return results
 
-                    if pm_price:
-                        validation = await validator.validate_opportunity(
-                            market_slug=signal.market_slug,
-                            outcome="Yes",  # Default
-                            pm_price=pm_price,
-                            fair_value=signal.price_mentioned,
-                            order_size_usd=500
-                        )
+            # Analyze each wallet through existing pipeline
+            async with WalletScanner() as wallet_scanner:
+                # Fetch leaderboard for saturation analysis
+                leaderboard = await wallet_scanner.fetch_leaderboard(limit=100, period="week")
 
-                        if validation.is_valid:
-                            log(f"[TWITTER] VALID signal from @{signal.author}: {signal.market_slug}")
-                            validated_signals.append((signal, market_info, validation))
-                else:
-                    # No validation possible, but whale alerts are still interesting
-                    if signal.signal_type == "whale_alert" and signal.whale_amount >= 50000:
-                        log(f"[TWITTER] WHALE: @{signal.author} ${signal.whale_amount:,.0f}")
-                        validated_signals.append((signal, market_info, None))
+                for address in wallets_found:
+                    if address in seen_wallets:
+                        log(f"[TWITTER] Skipping {address[:12]}... (already seen)")
+                        continue
+
+                    # Get wallet profit from profile
+                    try:
+                        profile = await wallet_scanner.get_wallet_profile(address)
+                        if not profile:
+                            log(f"[TWITTER] Skipping {address[:12]}... (no profile)")
+                            continue
+                        if profile.profit < 500:  # Min $500 profit
+                            log(f"[TWITTER] Skipping {address[:12]}... (profit ${profile.profit:.0f} < $500)")
+                            continue
+                        wallet_profit = profile.profit
+                    except Exception as e:
+                        log(f"[TWITTER] Error fetching profile {address[:12]}: {e}")
+                        continue
+
+                    # Run through existing wallet analysis pipeline
+                    result = await analyze_wallet(
+                        wallet_scanner,
+                        address,
+                        wallet_profit,
+                        leaderboard,
+                        saturation_history
+                    )
+
+                    if result:
+                        result["source"] = "twitter"
+                        log(f"[TWITTER] PROFITABLE: {address[:12]}... "
+                            f"ROI={result['profit_analysis']['monthly_roi_pct']:.0f}%/mo, "
+                            f"score={result['replicability_score']}/10")
+                        results.append(result)
+
+                    await asyncio.sleep(0.5)  # Rate limiting
 
     except Exception as e:
         log(f"[TWITTER] Error: {e}")
+        import traceback
+        traceback.print_exc()
 
-    log(f"[TWITTER] {len(validated_signals)} validated signals")
-    return validated_signals
+    log(f"[TWITTER] {len(results)} profitable wallets found")
+    return results
 
 
 async def daemon_loop():
@@ -1108,16 +1055,15 @@ async def daemon_loop():
 
             # === TWITTER SCAN ===
             if now - last_twitter_scan >= SCAN_INTERVAL_TWITTER:
-                twitter_signals = await run_twitter_scan(validator)
+                twitter_wallets = await run_twitter_scan(saturation_history, seen_wallets)
 
-                for signal, market_info, validation in twitter_signals:
-                    signal_id = f"tw:{signal.tweet_id}"
-                    if signal_id not in seen_opportunities:
-                        await send_telegram(format_twitter_alert(signal, market_info, validation))
-                        seen_opportunities.add(signal_id)
+                for wallet in twitter_wallets:
+                    if wallet["address"] not in seen_wallets:
+                        await send_telegram(format_alert(wallet))
+                        seen_wallets.add(wallet["address"])
                         alerts_sent += 1
 
-                save_seen_opportunities(seen_opportunities)
+                save_seen_wallets(seen_wallets)
                 last_twitter_scan = now
 
             # Summary
