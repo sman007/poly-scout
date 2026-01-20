@@ -48,6 +48,7 @@ MAX_RESOLUTION_DAYS = 7     # Maximum days until resolution
 SCAN_INTERVAL_LEADERBOARD = 300   # 5 minutes
 SCAN_INTERVAL_SPORTSBOOK = 300    # 5 minutes
 SCAN_INTERVAL_TWITTER = 900       # 15 minutes
+SCAN_INTERVAL_NEW_MARKETS = 60    # 1 minute (aggressive for sniping)
 
 # =============================================================================
 # Monitored Sports (sport_key, pm_prefix, display_name)

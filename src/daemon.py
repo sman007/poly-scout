@@ -27,11 +27,12 @@ from src.scanner import WalletScanner, WalletProfile, find_similar_wallets, upda
 from src.sportsbook import SportsbookComparator, SportsbookOpportunity
 from src.twitter_scanner import TwitterScanner
 from src.validator import EdgeValidator, ValidationResult
+from src.new_market_monitor import NewMarketMonitor, NewMarketOpportunity
 from src.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     MIN_EDGE_PCT, MIN_LIQUIDITY_USD, MIN_EXPECTED_PROFIT,
     SCAN_INTERVAL_LEADERBOARD, SCAN_INTERVAL_SPORTSBOOK, SCAN_INTERVAL_TWITTER,
-    SEEN_OPPORTUNITIES_FILE
+    SCAN_INTERVAL_NEW_MARKETS, SEEN_OPPORTUNITIES_FILE
 )
 
 load_dotenv()
@@ -639,6 +640,25 @@ async def send_telegram(message: str):
         log(f"[TG] Error: {e}")
 
 
+def format_new_market_alert(opp: NewMarketOpportunity) -> str:
+    """Format alert for newly detected market with mispricing."""
+    prices_str = " / ".join(f"{o}: ${p:.2f}" for o, p in zip(opp.outcomes, opp.prices))
+
+    return f"""NEW MARKET DETECTED
+
+{opp.title}
+
+PRICES
+{prices_str}
+Total: ${sum(opp.prices):.2f}
+
+SIGNAL
+Mispricing score: {opp.mispricing_score:.0%}
+{opp.recommendation}
+
+https://polymarket.com/event/{opp.slug}"""
+
+
 def format_alert(wallet: dict) -> str:
     """Format compact profit-focused alert message."""
     strat = wallet.get("strategy_params", {})
@@ -1074,6 +1094,7 @@ async def daemon_loop():
     log(f"    - Leaderboard: {SCAN_INTERVAL_LEADERBOARD // 60} min")
     log(f"    - Sportsbook: {SCAN_INTERVAL_SPORTSBOOK // 60} min")
     log(f"    - Twitter: {SCAN_INTERVAL_TWITTER // 60} min")
+    log(f"    - New Markets: {SCAN_INTERVAL_NEW_MARKETS}s")
     log("")
     log(f"  Telegram: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}")
     log("=" * 60)
@@ -1089,9 +1110,13 @@ async def daemon_loop():
     last_leaderboard_scan = 0
     last_sportsbook_scan = 0
     last_twitter_scan = 0
+    last_new_market_scan = 0
 
     # Create validator for all sources
     validator = EdgeValidator()
+
+    # Create new market monitor
+    new_market_monitor = NewMarketMonitor()
 
     while True:
         try:
@@ -1141,6 +1166,18 @@ async def daemon_loop():
                 save_seen_wallets(seen_wallets)
                 last_twitter_scan = now
 
+            # === NEW MARKET SCAN ===
+            if now - last_new_market_scan >= SCAN_INTERVAL_NEW_MARKETS:
+                try:
+                    opportunities = await new_market_monitor.scan_for_new_markets()
+                    for opp in opportunities:
+                        if opp.mispricing_score >= 0.3:
+                            await send_telegram(format_new_market_alert(opp))
+                            alerts_sent += 1
+                except Exception as e:
+                    log(f"[NEW MARKETS] Error: {e}")
+                last_new_market_scan = now
+
             # Summary
             if alerts_sent > 0:
                 log(f"[SUMMARY] Sent {alerts_sent} alerts")
@@ -1160,6 +1197,8 @@ async def daemon_loop():
             next_scans.append(("Sportsbook", SCAN_INTERVAL_SPORTSBOOK - (datetime.now().timestamp() - last_sportsbook_scan)))
         if last_twitter_scan > 0:
             next_scans.append(("Twitter", SCAN_INTERVAL_TWITTER - (datetime.now().timestamp() - last_twitter_scan)))
+        if last_new_market_scan > 0:
+            next_scans.append(("New Markets", SCAN_INTERVAL_NEW_MARKETS - (datetime.now().timestamp() - last_new_market_scan)))
 
         # Wait until next scan is due
         if next_scans:
