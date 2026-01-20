@@ -3,6 +3,12 @@ Auto-pilot daemon for poly-scout.
 Detects explosive growth patterns in Polymarket wallets.
 Finds emerging alpha traders BEFORE they become famous.
 Only alerts after reverse-engineering the strategy.
+
+v2: Integrated multi-source scanning with edge validation
+- Leaderboard scanning (existing)
+- Sportsbook comparison (new)
+- X.com/Nitter scanning (new)
+- Edge validation before alerts (new)
 """
 
 import asyncio
@@ -18,6 +24,15 @@ import httpx
 from dotenv import load_dotenv
 
 from src.scanner import WalletScanner, WalletProfile, find_similar_wallets, update_saturation_trend
+from src.sportsbook import SportsbookComparator, SportsbookOpportunity
+from src.twitter_scanner import TwitterScanner, TweetSignal
+from src.validator import EdgeValidator, ValidationResult
+from src.config import (
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    MIN_EDGE_PCT, MIN_LIQUIDITY_USD, MIN_EXPECTED_PROFIT,
+    SCAN_INTERVAL_LEADERBOARD, SCAN_INTERVAL_SPORTSBOOK, SCAN_INTERVAL_TWITTER,
+    SEEN_OPPORTUNITIES_FILE
+)
 
 load_dotenv()
 
@@ -28,8 +43,6 @@ def log(msg: str):
 
 # Configuration
 SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Velocity thresholds
 MIN_VELOCITY = float(os.getenv("MIN_VELOCITY", "300"))  # $/day
@@ -131,6 +144,29 @@ def save_saturation_history(history: dict):
     SATURATION_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(SATURATION_HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
+
+
+def load_seen_opportunities() -> set:
+    """Load previously seen opportunities to avoid duplicates."""
+    try:
+        path = Path(SEEN_OPPORTUNITIES_FILE)
+        if path.exists():
+            with open(path) as f:
+                return set(json.load(f))
+    except:
+        pass
+    return set()
+
+
+def save_seen_opportunities(opps: set):
+    """Save seen opportunities."""
+    try:
+        path = Path(SEEN_OPPORTUNITIES_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(list(opps), f)
+    except Exception as e:
+        log(f"Error saving seen opportunities: {e}")
 
 
 def analyze_strategy_deep(activity: list) -> dict:
@@ -607,6 +643,82 @@ https://polymarket.com/profile/{wallet['address']}"""
     return msg
 
 
+def format_sportsbook_alert(opp: SportsbookOpportunity, validation: ValidationResult) -> str:
+    """Format verified sportsbook opportunity alert."""
+    action_emoji = "+" if opp.action == "BUY" else "-"
+
+    # Format validation status
+    if validation.is_valid:
+        status = "VERIFIED"
+    else:
+        status = f"FAILED: {validation.failure_reason}"
+
+    msg = f"""[VERIFIED PROFIT] SPORTSBOOK MISPRICING
+
+ACTION: {opp.action} {opp.outcome} @ {opp.pm_price:.1%}
+Market: {opp.market_slug}
+
+EDGE VERIFICATION
+- Sportsbook avg: {opp.sb_price:.1%} ({opp.books_count} books)
+- Edge: {opp.edge_pct:+.1f}%
+- Liquidity: ${validation.liquidity_usd:,.0f}
+- Slippage: {validation.slippage_pct:.1f}%
+
+EXPECTED PROFIT ($500 position)
+- Entry: ${500:.0f} @ {validation.effective_price:.1%}
+- Fair value: {opp.sb_price:.1%}
+- Expected profit: ${validation.expected_profit:.2f}
+- Fees: ${validation.fees_usd:.2f}
+
+VALIDATION: {status}
+
+GAME: {opp.event_title}
+Sport: {opp.sport}
+Resolution: {opp.resolution_time.strftime('%Y-%m-%d %H:%M')}
+
+https://polymarket.com/event/{opp.market_slug}"""
+
+    return msg
+
+
+def format_twitter_alert(signal: TweetSignal, market_info: dict, validation: ValidationResult) -> str:
+    """Format Twitter signal alert."""
+    signal_emoji = {
+        "whale_alert": "[WHALE]",
+        "price_claim": "[PRICE]",
+        "market_mention": "[MENTION]",
+        "news": "[NEWS]"
+    }
+
+    emoji = signal_emoji.get(signal.signal_type, "[?]")
+
+    msg = f"""{emoji} X.COM SIGNAL
+
+@{signal.author}: {signal.text[:200]}...
+
+MARKET: {signal.market_slug or 'Unknown'}
+"""
+
+    if signal.price_mentioned:
+        msg += f"Price mentioned: {signal.price_mentioned:.0%}\n"
+
+    if signal.whale_amount:
+        msg += f"Whale amount: ${signal.whale_amount:,.0f}\n"
+
+    if validation and validation.is_valid:
+        msg += f"""
+VALIDATION
+- Edge: {validation.edge_pct:+.1f}%
+- Liquidity: ${validation.liquidity_usd:,.0f}
+- Expected profit: ${validation.expected_profit:.2f}
+"""
+
+    if signal.market_url:
+        msg += f"\n{signal.market_url}"
+
+    return msg
+
+
 async def analyze_wallet(
     scanner: WalletScanner,
     address: str,
@@ -756,9 +868,9 @@ async def analyze_wallet(
         return None
 
 
-async def run_scan(saturation_history: dict) -> list[dict]:
-    """Scan for profitable, replicable strategies."""
-    log(f"[{datetime.now().strftime('%H:%M:%S')}] Scanning...")
+async def run_leaderboard_scan(saturation_history: dict) -> list[dict]:
+    """Scan leaderboard for profitable, replicable strategies."""
+    log(f"[LEADERBOARD] Scanning...")
 
     async with WalletScanner() as scanner:
         log("  Fetching leaderboards...")
@@ -819,63 +931,222 @@ async def run_scan(saturation_history: dict) -> list[dict]:
         fast_count = sum(1 for r in results if r["is_fast_resolution"])
         slow_count = len(results) - fast_count
 
-        log(f"  Checked {checked}, found {len(results)} profitable strategies")
+        log(f"[LEADERBOARD] Checked {checked}, found {len(results)} profitable strategies")
         log(f"  -> {fast_count} FAST (15-min), {slow_count} slower")
         return results
 
 
+async def run_sportsbook_scan(validator: EdgeValidator) -> list[tuple[SportsbookOpportunity, ValidationResult]]:
+    """Scan sportsbooks for PM mispricings and validate."""
+    log(f"[SPORTSBOOK] Scanning...")
+
+    validated_opps = []
+
+    try:
+        async with SportsbookComparator() as comparator:
+            opportunities = await comparator.scan_all()
+
+            log(f"[SPORTSBOOK] Found {len(opportunities)} raw opportunities")
+
+            for opp in opportunities:
+                # Validate each opportunity
+                validation = await validator.validate_opportunity(
+                    market_slug=opp.market_slug,
+                    outcome=opp.outcome,
+                    pm_price=opp.pm_price,
+                    fair_value=opp.sb_price,
+                    order_size_usd=500
+                )
+
+                if validation.is_valid:
+                    log(f"[SPORTSBOOK] VALID: {opp.outcome} {opp.action} @ {opp.pm_price:.1%} "
+                        f"(edge={validation.edge_pct:+.1f}%, profit=${validation.expected_profit:.2f})")
+                    validated_opps.append((opp, validation))
+
+    except Exception as e:
+        log(f"[SPORTSBOOK] Error: {e}")
+
+    log(f"[SPORTSBOOK] {len(validated_opps)} validated opportunities")
+    return validated_opps
+
+
+async def run_twitter_scan(validator: EdgeValidator) -> list[tuple[TweetSignal, dict, ValidationResult]]:
+    """Scan X.com for Polymarket signals and validate."""
+    log(f"[TWITTER] Scanning...")
+
+    validated_signals = []
+
+    try:
+        async with TwitterScanner() as scanner:
+            signals = await scanner.scan_all()
+
+            log(f"[TWITTER] Found {len(signals)} raw signals")
+
+            for signal in signals:
+                # Skip if no market slug
+                if not signal.market_slug:
+                    continue
+
+                # Get market info
+                market_info = await scanner.validate_market(signal.market_slug)
+                if not market_info:
+                    continue
+
+                # If price mentioned, validate against it
+                if signal.price_mentioned:
+                    # Get current PM price from market info
+                    markets = market_info.get("markets", [])
+                    pm_price = None
+                    for m in markets:
+                        if m.get("active") and not m.get("closed"):
+                            prices = m.get("outcomePrices", "[]")
+                            if isinstance(prices, str):
+                                import json
+                                prices = json.loads(prices)
+                            if prices:
+                                pm_price = float(prices[0])
+                                break
+
+                    if pm_price:
+                        validation = await validator.validate_opportunity(
+                            market_slug=signal.market_slug,
+                            outcome="Yes",  # Default
+                            pm_price=pm_price,
+                            fair_value=signal.price_mentioned,
+                            order_size_usd=500
+                        )
+
+                        if validation.is_valid:
+                            log(f"[TWITTER] VALID signal from @{signal.author}: {signal.market_slug}")
+                            validated_signals.append((signal, market_info, validation))
+                else:
+                    # No validation possible, but whale alerts are still interesting
+                    if signal.signal_type == "whale_alert" and signal.whale_amount >= 50000:
+                        log(f"[TWITTER] WHALE: @{signal.author} ${signal.whale_amount:,.0f}")
+                        validated_signals.append((signal, market_info, None))
+
+    except Exception as e:
+        log(f"[TWITTER] Error: {e}")
+
+    log(f"[TWITTER] {len(validated_signals)} validated signals")
+    return validated_signals
+
+
 async def daemon_loop():
     log("=" * 60)
-    log("  POLY-SCOUT: PROFIT HUNTER")
+    log("  POLY-SCOUT v2: AUTONOMOUS PROFIT AGENT")
     log("=" * 60)
-    log("  Goal: Find profitable, replicable trading strategies")
+    log("  Goal: Find and validate profitable opportunities")
     log("")
-    log("  Filters:")
-    log(f"    - Account <= {MAX_ACCOUNT_AGE_DAYS} days old")
-    log(f"    - Velocity >= ${MIN_VELOCITY:,.0f}/day")
-    log(f"    - Trades/week >= {MIN_TRADES_WEEK}")
-    log(f"    - Replicability >= {MIN_REPLICABILITY_SCORE}/10")
-    log(f"    - Monthly ROI >= {MIN_MONTHLY_ROI_PCT}%")
+    log("  Sources:")
+    log("    - Leaderboard wallets (strategy replication)")
+    log("    - Sportsbook comparison (PM vs odds)")
+    log("    - X.com/Twitter (whale alerts, tips)")
     log("")
-    log("  Strategies detected:")
-    for strategy, emoji in STRATEGY_EMOJI.items():
-        log(f"    - {emoji} {strategy}")
+    log("  Validation:")
+    log(f"    - Min edge: {MIN_EDGE_PCT}%")
+    log(f"    - Min liquidity: ${MIN_LIQUIDITY_USD:,}")
+    log(f"    - Min profit: ${MIN_EXPECTED_PROFIT}")
     log("")
-    log(f"  Scan interval: {SCAN_INTERVAL_MINUTES} min")
+    log("  Scan intervals:")
+    log(f"    - Leaderboard: {SCAN_INTERVAL_LEADERBOARD // 60} min")
+    log(f"    - Sportsbook: {SCAN_INTERVAL_SPORTSBOOK // 60} min")
+    log(f"    - Twitter: {SCAN_INTERVAL_TWITTER // 60} min")
+    log("")
     log(f"  Telegram: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}")
     log("=" * 60)
 
     seen_wallets = load_seen_wallets()
+    seen_opportunities = load_seen_opportunities()
     saturation_history = load_saturation_history()
-    log(f"Loaded {len(seen_wallets)} seen wallets, {len(saturation_history)} saturation records")
+    log(f"Loaded {len(seen_wallets)} seen wallets, {len(seen_opportunities)} seen opportunities")
 
-    await send_telegram("[POLY-SCOUT STARTED]\n\nHunting for profitable strategies...\nFilters: ROI >= 20%/mo, Replicability >= 6/10")
+    await send_telegram("[POLY-SCOUT v2 STARTED]\n\nAutonomous profit hunting active.\n\nSources: Leaderboard + Sportsbook + Twitter\nValidation: Edge > 3%, Liquidity > $1k")
+
+    # Track last scan times
+    last_leaderboard_scan = 0
+    last_sportsbook_scan = 0
+    last_twitter_scan = 0
+
+    # Create validator for all sources
+    validator = EdgeValidator()
 
     while True:
         try:
-            results = await run_scan(saturation_history)
+            now = datetime.now().timestamp()
+            alerts_sent = 0
 
-            # Save saturation history after each scan
-            save_saturation_history(saturation_history)
+            # === LEADERBOARD SCAN ===
+            if now - last_leaderboard_scan >= SCAN_INTERVAL_LEADERBOARD:
+                results = await run_leaderboard_scan(saturation_history)
+                save_saturation_history(saturation_history)
 
-            new_wallets = [w for w in results if w["address"] not in seen_wallets]
+                new_wallets = [w for w in results if w["address"] not in seen_wallets]
+                if new_wallets:
+                    log(f"[ALERT] {len(new_wallets)} NEW profitable strategy(ies)!")
+                    for wallet in new_wallets:
+                        await send_telegram(format_alert(wallet))
+                        seen_wallets.add(wallet["address"])
+                        alerts_sent += 1
+                    save_seen_wallets(seen_wallets)
 
-            if new_wallets:
-                log(f"[ALERT] {len(new_wallets)} NEW profitable strategy(ies)!")
-                for wallet in new_wallets:
-                    await send_telegram(format_alert(wallet))
-                    seen_wallets.add(wallet["address"])
-                save_seen_wallets(seen_wallets)
+                last_leaderboard_scan = now
+
+            # === SPORTSBOOK SCAN ===
+            if now - last_sportsbook_scan >= SCAN_INTERVAL_SPORTSBOOK:
+                sportsbook_opps = await run_sportsbook_scan(validator)
+
+                for opp, validation in sportsbook_opps:
+                    opp_id = f"sb:{opp.market_slug}:{opp.outcome}"
+                    if opp_id not in seen_opportunities:
+                        await send_telegram(format_sportsbook_alert(opp, validation))
+                        seen_opportunities.add(opp_id)
+                        alerts_sent += 1
+
+                save_seen_opportunities(seen_opportunities)
+                last_sportsbook_scan = now
+
+            # === TWITTER SCAN ===
+            if now - last_twitter_scan >= SCAN_INTERVAL_TWITTER:
+                twitter_signals = await run_twitter_scan(validator)
+
+                for signal, market_info, validation in twitter_signals:
+                    signal_id = f"tw:{signal.tweet_id}"
+                    if signal_id not in seen_opportunities:
+                        await send_telegram(format_twitter_alert(signal, market_info, validation))
+                        seen_opportunities.add(signal_id)
+                        alerts_sent += 1
+
+                save_seen_opportunities(seen_opportunities)
+                last_twitter_scan = now
+
+            # Summary
+            if alerts_sent > 0:
+                log(f"[SUMMARY] Sent {alerts_sent} alerts")
             else:
-                log(f"No new strategies ({len(results)} passed filters, already seen or below threshold)")
+                log(f"[SUMMARY] No new opportunities")
 
         except Exception as e:
             log(f"ERROR: {e}")
             import traceback
             traceback.print_exc()
 
-        log(f"Next scan in {SCAN_INTERVAL_MINUTES} min...")
-        await asyncio.sleep(SCAN_INTERVAL_MINUTES * 60)
+        # Calculate time to next scan
+        next_scans = []
+        if last_leaderboard_scan > 0:
+            next_scans.append(("Leaderboard", SCAN_INTERVAL_LEADERBOARD - (datetime.now().timestamp() - last_leaderboard_scan)))
+        if last_sportsbook_scan > 0:
+            next_scans.append(("Sportsbook", SCAN_INTERVAL_SPORTSBOOK - (datetime.now().timestamp() - last_sportsbook_scan)))
+        if last_twitter_scan > 0:
+            next_scans.append(("Twitter", SCAN_INTERVAL_TWITTER - (datetime.now().timestamp() - last_twitter_scan)))
+
+        # Wait until next scan is due
+        if next_scans:
+            next_scan_time = min(max(0, t[1]) for t in next_scans)
+            log(f"Next scan in {int(next_scan_time)}s...")
+            await asyncio.sleep(max(30, next_scan_time))  # At least 30s between loops
+        else:
+            await asyncio.sleep(60)
 
 
 def main():

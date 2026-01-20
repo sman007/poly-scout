@@ -12,6 +12,127 @@ from typing import Optional
 import yaml
 from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# =============================================================================
+# API Keys and Credentials
+# =============================================================================
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "4f966793260d394e5fe551bd517d4957")
+
+# =============================================================================
+# API Endpoints
+# =============================================================================
+
+GAMMA_API_BASE = "https://gamma-api.polymarket.com"
+CLOB_API_BASE = "https://clob.polymarket.com"
+DATA_API_BASE = "https://data-api.polymarket.com"
+
+# =============================================================================
+# Edge Validation Thresholds
+# =============================================================================
+
+MIN_EDGE_PCT = 3.0          # Minimum edge % to consider (after comparing to external source)
+MIN_LIQUIDITY_USD = 1000    # Minimum order book liquidity
+MAX_SLIPPAGE_PCT = 1.0      # Maximum acceptable slippage
+MIN_EXPECTED_PROFIT = 10    # Minimum expected profit in USD
+MAX_RESOLUTION_DAYS = 7     # Maximum days until resolution
+
+# =============================================================================
+# Scan Intervals (seconds)
+# =============================================================================
+
+SCAN_INTERVAL_LEADERBOARD = 300   # 5 minutes
+SCAN_INTERVAL_SPORTSBOOK = 300    # 5 minutes
+SCAN_INTERVAL_TWITTER = 900       # 15 minutes
+
+# =============================================================================
+# Monitored Sports (sport_key, pm_prefix, display_name)
+# =============================================================================
+
+MONITORED_SPORTS = [
+    ("basketball_nba", "nba", "NBA"),
+    ("soccer_spain_la_liga", "lal", "La Liga"),
+    ("soccer_epl", "epl", "EPL"),
+    ("soccer_germany_bundesliga", "bun", "Bundesliga"),
+    ("soccer_italy_serie_a", "ser", "Serie A"),
+    ("soccer_france_ligue_one", "fl1", "Ligue 1"),
+    ("icehockey_nhl", "nhl", "NHL"),
+]
+
+# =============================================================================
+# NBA Team Codes (for building PM slugs)
+# =============================================================================
+
+NBA_TEAM_CODES = {
+    "Atlanta Hawks": "atl",
+    "Boston Celtics": "bos",
+    "Brooklyn Nets": "bkn",
+    "Charlotte Hornets": "cha",
+    "Chicago Bulls": "chi",
+    "Cleveland Cavaliers": "cle",
+    "Dallas Mavericks": "dal",
+    "Denver Nuggets": "den",
+    "Detroit Pistons": "det",
+    "Golden State Warriors": "gsw",
+    "Houston Rockets": "hou",
+    "Indiana Pacers": "ind",
+    "Los Angeles Clippers": "lac",
+    "Los Angeles Lakers": "lal",
+    "Memphis Grizzlies": "mem",
+    "Miami Heat": "mia",
+    "Milwaukee Bucks": "mil",
+    "Minnesota Timberwolves": "min",
+    "New Orleans Pelicans": "nop",
+    "New York Knicks": "nyk",
+    "Oklahoma City Thunder": "okc",
+    "Orlando Magic": "orl",
+    "Philadelphia 76ers": "phi",
+    "Phoenix Suns": "phx",
+    "Portland Trail Blazers": "por",
+    "Sacramento Kings": "sac",
+    "San Antonio Spurs": "sas",
+    "Toronto Raptors": "tor",
+    "Utah Jazz": "uta",
+    "Washington Wizards": "wsh",
+}
+
+# =============================================================================
+# Nitter Instances (for X.com scraping)
+# =============================================================================
+
+NITTER_INSTANCES = [
+    "nitter.poast.org",
+    "nitter.privacydev.net",
+    "nitter.woodland.cafe",
+    "nitter.esmailelbob.xyz",
+]
+
+# =============================================================================
+# Data Files
+# =============================================================================
+
+SEEN_TWEETS_FILE = "./data/seen_tweets.json"
+SEEN_OPPORTUNITIES_FILE = "./data/seen_opportunities.json"
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+def american_to_prob(price: float) -> float:
+    """Convert American odds to implied probability."""
+    if price > 0:
+        return 100 / (price + 100)
+    else:
+        return abs(price) / (abs(price) + 100)
+
+
+# =============================================================================
+# Config Dataclass (legacy support)
+# =============================================================================
 
 @dataclass
 class Config:
