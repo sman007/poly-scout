@@ -88,13 +88,26 @@ class NewMarketMonitor:
             return None
 
         for market in markets:
-            outcomes = market.get("outcomes", [])
+            outcomes_raw = market.get("outcomes", [])
             prices_str = market.get("outcomePrices", "[]")
-            clob_token_ids = market.get("clobTokenIds", [])
+            clob_token_ids_raw = market.get("clobTokenIds", [])
 
             try:
+                # Parse outcomes - can be a JSON string or already a list
+                if isinstance(outcomes_raw, str):
+                    outcomes = json.loads(outcomes_raw)
+                else:
+                    outcomes = outcomes_raw
+
+                # Parse prices
                 prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
                 prices = [float(p) for p in prices]
+
+                # Parse token IDs - can be a JSON string or already a list
+                if isinstance(clob_token_ids_raw, str):
+                    clob_token_ids = json.loads(clob_token_ids_raw)
+                else:
+                    clob_token_ids = clob_token_ids_raw
             except Exception:
                 continue
 
