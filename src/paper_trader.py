@@ -31,6 +31,10 @@ KELLY_FRACTION = 0.5  # Half-Kelly for safety
 MAX_POSITION_PCT = 0.05  # Never risk more than 5% per trade
 MIN_POSITION_PCT = 0.01  # Minimum 1% to make trade worthwhile
 
+# Profit-taking thresholds (like reference wallet)
+TAKE_PARTIAL_PROFIT_MULT = 2.0  # Sell half at 2x
+TAKE_FULL_PROFIT_MULT = 5.0     # Sell all at 5x
+
 
 def log(msg: str):
     print(f"[PAPER] {msg}", flush=True)
@@ -293,6 +297,105 @@ class PaperTrader:
 
         return resolved
 
+    async def check_profit_taking(self) -> list:
+        """
+        Check open positions for profit-taking opportunities.
+        Like reference wallet: sell half at 2x, all at 5x.
+        """
+        profit_taken = []
+
+        positions_copy = self.portfolio["positions"][:]
+
+        for pos in positions_copy:
+            try:
+                # Get current market prices
+                url = f"{GAMMA_API_BASE}/events?slug={pos['slug']}"
+                resp = await self.client.get(url)
+                if resp.status_code != 200:
+                    continue
+
+                events = resp.json()
+                if not events:
+                    continue
+
+                event = events[0]
+                if event.get("closed"):
+                    continue  # Will be handled by check_resolutions
+
+                # Find current price for our outcome
+                current_price = None
+                for market in event.get("markets", []):
+                    outcomes = market.get("outcomes", [])
+                    prices_str = market.get("outcomePrices", "[]")
+                    try:
+                        prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
+                        prices = [float(p) for p in prices]
+                    except Exception:
+                        continue
+
+                    # Find price for our outcome
+                    for i, outcome in enumerate(outcomes):
+                        if outcome.upper() == pos["outcome"].upper() and i < len(prices):
+                            current_price = prices[i]
+                            break
+                    if current_price:
+                        break
+
+                if current_price is None:
+                    continue
+
+                entry_price = pos["entry_price"]
+                price_mult = current_price / entry_price if entry_price > 0 else 0
+
+                # Check for full profit (5x)
+                if price_mult >= TAKE_FULL_PROFIT_MULT:
+                    payout = pos["shares"] * current_price
+                    pnl = payout - pos["amount_invested"]
+
+                    log(f"PROFIT 5x+: {pos['title'][:30]}... @ ${current_price:.3f} ({price_mult:.1f}x)")
+                    log(f"  P&L: +${pnl:.2f}")
+
+                    pos["status"] = "profit_5x"
+                    pos["exit_price"] = current_price
+                    pos["pnl"] = pnl
+
+                    self.portfolio["current_balance"] += payout
+                    self.portfolio["total_pnl"] += pnl
+                    self.portfolio["wins"] += 1
+                    self.portfolio["closed_positions"].append(pos)
+                    self.portfolio["positions"].remove(pos)
+
+                    profit_taken.append({"pos": pos, "type": "full", "mult": price_mult})
+
+                # Check for partial profit (2x) - only if not already taken
+                elif price_mult >= TAKE_PARTIAL_PROFIT_MULT and not pos.get("partial_profit_taken"):
+                    # Sell half the position
+                    half_shares = pos["shares"] / 2
+                    half_invested = pos["amount_invested"] / 2
+                    payout = half_shares * current_price
+                    pnl = payout - half_invested
+
+                    log(f"PROFIT 2x: {pos['title'][:30]}... @ ${current_price:.3f} ({price_mult:.1f}x)")
+                    log(f"  Sold half: +${pnl:.2f} | Remaining: {half_shares:.1f} shares")
+
+                    # Update position to reflect half sold
+                    pos["shares"] = half_shares
+                    pos["amount_invested"] = half_invested
+                    pos["partial_profit_taken"] = True
+
+                    self.portfolio["current_balance"] += payout
+                    self.portfolio["total_pnl"] += pnl
+
+                    profit_taken.append({"pos": pos, "type": "partial", "mult": price_mult, "pnl": pnl})
+
+            except Exception as e:
+                continue
+
+        if profit_taken:
+            self._save_portfolio()
+
+        return profit_taken
+
     def get_summary(self) -> str:
         """Get portfolio summary."""
         p = self.portfolio
@@ -395,6 +498,18 @@ async def run_paper_trading():
 
                     if position:
                         log(f"\n{trader.get_summary()}\n")
+
+            # Check for profit-taking opportunities (2x partial, 5x full)
+            profit_taken = await trader.check_profit_taking()
+            for pt in profit_taken:
+                pos = pt["pos"]
+                if pt["type"] == "full":
+                    log(f"\nPROFIT TAKEN (5x): {pos['title'][:40]}...")
+                    log(f"  Sold all @ {pt['mult']:.1f}x | P&L: ${pos['pnl']:+,.2f}")
+                else:
+                    log(f"\nPARTIAL PROFIT (2x): {pos['title'][:40]}...")
+                    log(f"  Sold half @ {pt['mult']:.1f}x | P&L: ${pt['pnl']:+,.2f}")
+                log(f"\n{trader.get_summary()}\n")
 
             # Check for resolved positions
             resolved = await trader.check_resolutions()
