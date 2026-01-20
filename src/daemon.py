@@ -60,6 +60,7 @@ STRATEGY_POLITICAL = "POLITICAL"
 STRATEGY_MARKET_MAKER = "MARKET_MAKER"
 STRATEGY_MIXED = "MIXED"
 STRATEGY_UNKNOWN = "UNKNOWN"
+STRATEGY_NEW_MARKET_SNIPER = "NEW_MARKET_SNIPER"  # Early entry on mispriced new markets
 
 # Resolution time in MINUTES per strategy
 # Lower = faster capital turnover = more compounding = more profit
@@ -71,6 +72,7 @@ STRATEGY_RESOLUTION_MINUTES = {
     STRATEGY_MIXED: 120,              # 2 hours avg
     STRATEGY_POLITICAL: 43200,        # 30 days avg (elections)
     STRATEGY_UNKNOWN: 1440,           # 1 day avg (conservative)
+    STRATEGY_NEW_MARKET_SNIPER: 1440, # Variable - holds until resolution (days)
 }
 
 # Compounding potential per day (higher = faster profit)
@@ -167,6 +169,71 @@ def save_seen_opportunities(opps: set):
             json.dump(list(opps), f)
     except Exception as e:
         log(f"Error saving seen opportunities: {e}")
+
+
+def _detect_new_market_sniper(activity: list) -> tuple[bool, float, str]:
+    """
+    Detect NEW_MARKET_SNIPER pattern:
+    - Enters markets very early (concentrated first trades)
+    - Entry prices show extreme mispricing (<$0.15 or >$0.85)
+    - Few trades per market (buy and hold)
+
+    Returns: (is_pattern, confidence, explanation)
+    """
+    if not activity or len(activity) < 5:
+        return False, 0.0, ""
+
+    # Group trades by market
+    market_trades = {}
+    for t in activity:
+        market = t.get("slug") or t.get("market_id", "unknown")
+        if market not in market_trades:
+            market_trades[market] = []
+        market_trades[market].append(t)
+
+    # Analyze for sniper pattern
+    sniper_markets = 0
+    total_markets = len(market_trades)
+    extreme_prices = []
+
+    for market, trades in market_trades.items():
+        # Few trades per market = buy and hold (sniper behavior)
+        if len(trades) > 10:
+            continue  # Too many trades, not sniper
+
+        # Check for extreme entry prices
+        buy_trades = [t for t in trades if t.get("side") == "buy"]
+        for t in buy_trades:
+            price = float(t.get("price", 0.5) or 0.5)
+            # Extreme mispricing: <15 cents or >85 cents
+            if price < 0.15 or price > 0.85:
+                extreme_prices.append(price)
+                sniper_markets += 1
+                break
+
+    if total_markets == 0:
+        return False, 0.0, ""
+
+    sniper_ratio = sniper_markets / total_markets
+    avg_extreme_price = sum(extreme_prices) / len(extreme_prices) if extreme_prices else 0.5
+
+    # Calculate confidence
+    confidence = 0.0
+    if sniper_ratio > 0.3:
+        confidence += 0.3
+    if sniper_ratio > 0.5:
+        confidence += 0.2
+    if avg_extreme_price < 0.10 or avg_extreme_price > 0.90:
+        confidence += 0.3
+
+    is_pattern = confidence >= 0.5 and sniper_ratio >= 0.3
+
+    explanation = (
+        f"New market sniper - enters at extreme prices (avg ${avg_extreme_price:.2f}). "
+        f"{sniper_ratio:.0%} of markets show sniper pattern. Buy-and-hold until resolution."
+    )
+
+    return is_pattern, min(0.95, confidence), explanation
 
 
 def analyze_strategy_deep(activity: list) -> dict:
@@ -345,6 +412,14 @@ def analyze_strategy_deep(activity: list) -> dict:
         elif political_count / len(activity) > 0.5:
             likely_strategy = STRATEGY_POLITICAL
             confidence = political_count / len(activity)
+
+    # Check for NEW_MARKET_SNIPER pattern (extreme entry prices, buy-and-hold)
+    if likely_strategy == STRATEGY_UNKNOWN:
+        is_sniper, sniper_conf, sniper_explanation = _detect_new_market_sniper(activity)
+        if is_sniper and sniper_conf > confidence:
+            likely_strategy = STRATEGY_NEW_MARKET_SNIPER
+            confidence = sniper_conf
+            edge_explanation = sniper_explanation
 
     # If still unknown but has clear pattern
     if likely_strategy == STRATEGY_UNKNOWN and len(activity) >= 20:
