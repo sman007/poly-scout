@@ -1167,13 +1167,17 @@ async def daemon_loop():
                 last_twitter_scan = now
 
             # === NEW MARKET SCAN ===
+            # Only alerts when mispricing detected (not just new markets)
             if now - last_new_market_scan >= SCAN_INTERVAL_NEW_MARKETS:
                 try:
                     opportunities = await new_market_monitor.scan_for_new_markets()
+
+                    # Only alert on actual mispricing opportunities
                     for opp in opportunities:
-                        if opp.mispricing_score >= 0.3:
+                        if opp.mispricing_score >= 0.5:  # Higher threshold for alerts
                             await send_telegram(format_new_market_alert(opp))
                             alerts_sent += 1
+
                 except Exception as e:
                     log(f"[NEW MARKETS] Error: {e}")
                 last_new_market_scan = now
