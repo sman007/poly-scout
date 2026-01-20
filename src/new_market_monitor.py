@@ -31,6 +31,10 @@ class NewMarketOpportunity:
     detected_at: datetime
     mispricing_score: float  # 0-1, higher = more mispriced
     recommendation: str  # "BUY YES", "BUY NO", "SKIP"
+    # New fields for realistic trading
+    cheap_outcome_idx: int = 0  # Index of the cheap outcome
+    cheap_outcome_name: str = ""  # Actual name like "Yes" or "No"
+    token_id: str = ""  # CLOB token ID for order book queries
 
 
 class NewMarketMonitor:
@@ -86,6 +90,7 @@ class NewMarketMonitor:
         for market in markets:
             outcomes = market.get("outcomes", [])
             prices_str = market.get("outcomePrices", "[]")
+            clob_token_ids = market.get("clobTokenIds", [])
 
             try:
                 prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
@@ -100,6 +105,9 @@ class NewMarketMonitor:
             total = sum(prices)
             mispricing_score = 0.0
             recommendation = "SKIP"
+            cheap_idx = 0
+            cheap_outcome_name = outcomes[0] if outcomes else "Unknown"
+            token_id = clob_token_ids[0] if clob_token_ids else ""
 
             # Signal 1: Prices don't sum to ~1.0 (arbitrage opportunity)
             if total < 0.95:
@@ -113,7 +121,9 @@ class NewMarketMonitor:
             if min_price < 0.10:
                 mispricing_score += 0.3
                 cheap_idx = prices.index(min_price)
-                recommendation = f"BUY {outcomes[cheap_idx]} at ${min_price:.2f}"
+                cheap_outcome_name = outcomes[cheap_idx] if cheap_idx < len(outcomes) else "Unknown"
+                token_id = clob_token_ids[cheap_idx] if cheap_idx < len(clob_token_ids) else ""
+                recommendation = f"BUY {cheap_outcome_name} at ${min_price:.2f}"
 
             if max_price > 0.90:
                 mispricing_score += 0.2
@@ -127,6 +137,9 @@ class NewMarketMonitor:
                     detected_at=datetime.now(),
                     mispricing_score=mispricing_score,
                     recommendation=recommendation,
+                    cheap_outcome_idx=cheap_idx,
+                    cheap_outcome_name=cheap_outcome_name,
+                    token_id=token_id,
                 )
 
         return None
