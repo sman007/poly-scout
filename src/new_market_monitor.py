@@ -43,7 +43,10 @@ class NewMarketMonitor:
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=30)
         self.seen_markets = self._load_seen_markets()
+        self._warmed_up = len(self.seen_markets) > 0  # Skip trading on first scan if empty
         log(f"Loaded {len(self.seen_markets)} seen markets")
+        if not self._warmed_up:
+            log("First run - will warm up by recording existing markets without trading")
 
     def _load_seen_markets(self) -> set:
         """Load previously seen market slugs."""
@@ -167,6 +170,17 @@ class NewMarketMonitor:
         new_count = 0
 
         events = await self.fetch_active_markets()
+
+        # On first scan (warm-up), just record all markets without flagging as opportunities
+        if not self._warmed_up:
+            for event in events:
+                slug = event.get("slug", "")
+                if slug:
+                    self.seen_markets.add(slug)
+            self._save_seen_markets()
+            log(f"Warm-up complete: recorded {len(self.seen_markets)} existing markets")
+            self._warmed_up = True
+            return []  # Don't return any opportunities on first scan
 
         for event in events:
             slug = event.get("slug", "")
