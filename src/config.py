@@ -23,6 +23,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "4f966793260d394e5fe551bd517d4957")
 
+# Polygon RPC for blockchain scanning (get free key from Alchemy)
+POLYGON_RPC_URL = os.getenv("POLYGON_RPC_URL", "https://polygon-rpc.com")
+
 # =============================================================================
 # API Endpoints
 # =============================================================================
