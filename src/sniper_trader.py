@@ -61,7 +61,10 @@ MAX_ENTRY_PRICE = 0.08             # Reject fills with avg price >8c
 MIN_RESOLUTION_DAYS = 1            # Skip markets resolving too soon
 MAX_RESOLUTION_DAYS = 90           # Skip markets resolving too late
 OPTIMAL_RESOLUTION_MAX = 30        # Sweet spot: 1-30 days
-MAX_ACTIVE_POSITIONS = 25          # Position cap
+
+# Quality gates (profit-first: take all good opportunities)
+MIN_OPPORTUNITY_SCORE = 0.40       # Quality gate - reject low-score opps
+MAX_CAPITAL_EXPOSURE = 0.80        # Don't deploy more than 80% of capital
 
 # Scoring weights (sum to 1.0)
 WEIGHT_PRICE = 0.40                # Lower price = higher score
@@ -616,25 +619,21 @@ class SniperTrader:
             exit_liquidity_usd=bid_liquidity
         )
 
-        # Position cap enforcement
-        current_positions = len(self.portfolio["positions"])
-        if current_positions >= MAX_ACTIVE_POSITIONS:
-            # Find worst scoring existing position
-            positions_with_scores = [
-                (i, p.get("score", 0.0))
-                for i, p in enumerate(self.portfolio["positions"])
-            ]
-            if positions_with_scores:
-                worst_idx, worst_score = min(positions_with_scores, key=lambda x: x[1])
-                if event.score <= worst_score:
-                    self.portfolio.setdefault("skipped_at_cap", 0)
-                    self.portfolio["skipped_at_cap"] += 1
-                    log(f"SKIP: At cap ({current_positions}/{MAX_ACTIVE_POSITIONS}), "
-                        f"score {event.score:.3f} <= worst {worst_score:.3f}")
-                    return False
-                # New opportunity beats worst - will replace after fill
-                log(f"CAP: Will replace pos #{worst_idx} (score {worst_score:.3f}) "
-                    f"with score {event.score:.3f}")
+        # Quality gate: reject low-score opportunities
+        if event.score < MIN_OPPORTUNITY_SCORE:
+            self.portfolio.setdefault("skipped_low_score", 0)
+            self.portfolio["skipped_low_score"] += 1
+            log(f"SKIP: Low score {event.score:.3f} < {MIN_OPPORTUNITY_SCORE} for {event.title[:30]}...")
+            return False
+
+        # Capital exposure gate: don't over-deploy
+        total_invested = sum(p.get("amount_invested", 0) for p in self.portfolio["positions"])
+        current_exposure = total_invested / self.portfolio["starting_balance"]
+        if current_exposure >= MAX_CAPITAL_EXPOSURE:
+            self.portfolio.setdefault("skipped_exposure_limit", 0)
+            self.portfolio["skipped_exposure_limit"] += 1
+            log(f"SKIP: Exposure {current_exposure:.1%} >= {MAX_CAPITAL_EXPOSURE:.0%} limit")
+            return False
 
         # Simulate buy with last trade price for validation
         fill = self.simulate_buy(asks, max_spend, last_trade=last_trade)
@@ -664,23 +663,6 @@ class SniperTrader:
             "score": event.score,
             "days_to_resolution": event.days_to_resolution,
         }
-
-        # Handle position cap replacement
-        if current_positions >= MAX_ACTIVE_POSITIONS:
-            # Find and close worst position to make room
-            positions_with_scores = [
-                (i, p.get("score", 0.0))
-                for i, p in enumerate(self.portfolio["positions"])
-            ]
-            if positions_with_scores:
-                worst_idx, worst_score = min(positions_with_scores, key=lambda x: x[1])
-                worst_pos = self.portfolio["positions"][worst_idx]
-                log(f"REPLACE: Closing '{worst_pos['outcome'][:20]}' (score {worst_score:.3f}) "
-                    f"for better opportunity")
-                # Mark as replaced (not a loss cut)
-                self.portfolio["positions"].pop(worst_idx)
-                self.portfolio.setdefault("replaced_positions", 0)
-                self.portfolio["replaced_positions"] += 1
 
         self.portfolio["positions"].append(position)
         self.portfolio["current_balance"] -= fill.total_cost
@@ -837,19 +819,23 @@ class SniperTrader:
         scores = [pos.get("score", 0) for pos in p["positions"]]
         avg_score = sum(scores) / len(scores) if scores else 0
 
+        # Calculate capital exposure
+        total_invested = sum(pos.get("amount_invested", 0) for pos in p["positions"])
+        exposure_pct = total_invested / p["starting_balance"] * 100 if p["starting_balance"] > 0 else 0
+
         # Skip counts
         skipped_no_date = p.get("skipped_no_end_date", 0)
         skipped_far = p.get("skipped_too_far_out", 0)
-        skipped_cap = p.get("skipped_at_cap", 0)
-        replaced = p.get("replaced_positions", 0)
+        skipped_score = p.get("skipped_low_score", 0)
+        skipped_exposure = p.get("skipped_exposure_limit", 0)
 
         return f"""
 ╔══════════════════════════════════════════════════════╗
 ║  SNIPER TRADER - ${p['current_balance']:>10,.2f} balance
 ║  P&L: ${p['total_pnl']:>+10,.2f} ({ret:>+.1f}%)
-║  Open: {len(p['positions'])}/{MAX_ACTIVE_POSITIONS} | Avg Score: {avg_score:.3f}
+║  Open: {len(p['positions'])} | Exposure: {exposure_pct:.0f}% | Avg Score: {avg_score:.3f}
 ║  Flips: {p.get('flips',0)} | Cuts: {p.get('cuts',0)} | Resolved: {p.get('resolutions',0)}
-║  Skip: noDate:{skipped_no_date} farOut:{skipped_far} cap:{skipped_cap} | Repl: {replaced}
+║  Skip: noDate:{skipped_no_date} far:{skipped_far} score:{skipped_score} exp:{skipped_exposure}
 ║  Scan: {self.scan_count} | WS: {ws_status} ({self.ws_updates} updates)
 ╚══════════════════════════════════════════════════════╝"""
 

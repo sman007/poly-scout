@@ -1,12 +1,12 @@
 [Unit]
-Description=Poly-Scout Sniper Trader
+Description=Poly-Scout Sniper Trader + Dashboard
 After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/root/poly-scout
-ExecStart=/usr/bin/python3 -m src.sniper_trader
+ExecStart=/bin/bash -c 'python3 -m src.sniper_trader & python3 -m src.dashboard --port 8080; wait'
 Restart=always
 RestartSec=5
 StandardOutput=append:/var/log/sniper.log
@@ -14,8 +14,6 @@ StandardError=append:/var/log/sniper.log
 
 # Performance tuning
 Nice=-5
-CPUSchedulingPolicy=fifo
-CPUSchedulingPriority=50
 
 [Install]
 WantedBy=multi-user.target
