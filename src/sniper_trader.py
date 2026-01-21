@@ -392,7 +392,7 @@ class SniperTrader:
         return FillResult(total_sold, avg_price, total_proceeds, slippage)
 
     async def scan_new_markets(self) -> List[NewMarketEvent]:
-        """Scan for new markets (fast polling)."""
+        """Scan for new AND existing mispriced markets."""
         start = time.time()
         events = []
 
@@ -405,27 +405,31 @@ class SniperTrader:
 
             data = resp.json()
 
-            # First scan: just record markets
-            if not self.seen_markets:
-                for event in data:
-                    slug = event.get("slug", "")
-                    if slug:
-                        self.seen_markets.add(slug)
-                self._save_seen_markets()
-                log(f"Warmup: recorded {len(self.seen_markets)} existing markets")
-                return events
+            # First scan: record markets AND find existing mispriced opportunities
+            is_warmup = not self.seen_markets
 
-            # Look for new markets
+            # Look for markets (new or mispriced existing on warmup)
             for event in data:
                 slug = event.get("slug", "")
-                if not slug or slug in self.seen_markets:
+                if not slug:
                     continue
 
+                # On warmup: process ALL markets for mispricing
+                # After warmup: only process NEW markets
+                already_seen = slug in self.seen_markets
+                if already_seen and not is_warmup:
+                    continue
+
+                # Mark as seen
                 self.seen_markets.add(slug)
 
                 # Analyze for mispricing
                 for market in event.get("markets", []):
                     try:
+                        # Skip closed markets
+                        if market.get("closed"):
+                            continue
+
                         outcomes = market.get("outcomes", [])
                         prices_str = market.get("outcomePrices", "[]")
                         token_ids_raw = market.get("clobTokenIds", [])
@@ -442,13 +446,17 @@ class SniperTrader:
                         if len(prices) < 2:
                             continue
 
-                        # Check for mispricing
+                        # Check for mispricing - cheap longshot (<15¢)
                         min_price = min(prices)
                         if min_price < 0.15:  # Cheap outcome
                             idx = prices.index(min_price)
                             outcome = outcomes[idx] if idx < len(outcomes) else "Unknown"
                             token_id = token_ids[idx] if idx < len(token_ids) else ""
 
+                            if not token_id:
+                                continue
+
+                            prefix = "LONGSHOT" if is_warmup else "NEW"
                             events.append(NewMarketEvent(
                                 slug=slug,
                                 title=event.get("title", "")[:100],
@@ -457,10 +465,13 @@ class SniperTrader:
                                 price=min_price,
                                 timestamp=datetime.now()
                             ))
-                            log(f"NEW: {event.get('title', '')[:40]}... {outcome} @ ${min_price:.3f}")
+                            log(f"{prefix}: {event.get('title', '')[:40]}... {outcome} @ ${min_price:.3f}")
 
                     except Exception:
                         continue
+
+            if is_warmup:
+                log(f"Warmup: found {len(events)} mispriced in {len(self.seen_markets)} markets")
 
             self._save_seen_markets()
 
