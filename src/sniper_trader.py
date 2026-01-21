@@ -55,6 +55,7 @@ MAX_BOOK_DEPTH_PCT = 0.10
 MIN_LIQUIDITY_USD = 50.0
 MIN_EXIT_LIQUIDITY_USD = 100.0     # Must have bids to exit
 MAX_SLIPPAGE_PCT = 75.0            # Reject fills with >75% slippage
+MAX_ENTRY_PRICE = 0.08             # Reject fills with avg price >8c
 
 # Profit-taking (aggressive sniper targets)
 TAKE_PROFIT_MULT = 1.25            # Quick flip at 1.25x (25% gain)
@@ -356,6 +357,11 @@ class SniperTrader:
         # Reject excessive slippage
         if slippage > MAX_SLIPPAGE_PCT:
             log(f"SKIP: Slippage too high ({slippage:.0f}% > {MAX_SLIPPAGE_PCT}%)")
+            return None
+
+        # Reject if fill price exceeds max entry price
+        if avg_price > MAX_ENTRY_PRICE:
+            log(f"SKIP: Entry price too high (${avg_price:.4f} > ${MAX_ENTRY_PRICE:.2f})")
             return None
 
         # Sanity check against last trade price (if available)
