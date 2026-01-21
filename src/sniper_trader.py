@@ -57,6 +57,17 @@ MIN_EXIT_LIQUIDITY_USD = 100.0     # Must have bids to exit
 MAX_SLIPPAGE_PCT = 75.0            # Reject fills with >75% slippage
 MAX_ENTRY_PRICE = 0.08             # Reject fills with avg price >8c
 
+# Selectivity - prioritize faster-moving markets
+MIN_RESOLUTION_DAYS = 1            # Skip markets resolving too soon
+MAX_RESOLUTION_DAYS = 90           # Skip markets resolving too late
+OPTIMAL_RESOLUTION_MAX = 30        # Sweet spot: 1-30 days
+MAX_ACTIVE_POSITIONS = 25          # Position cap
+
+# Scoring weights (sum to 1.0)
+WEIGHT_PRICE = 0.40                # Lower price = higher score
+WEIGHT_RESOLUTION = 0.35           # Closer to sweet spot = higher
+WEIGHT_LIQUIDITY = 0.25            # Better exit liquidity = higher
+
 # Profit-taking (aggressive sniper targets)
 TAKE_PROFIT_MULT = 1.25            # Quick flip at 1.25x (25% gain)
 TAKE_PARTIAL_PROFIT_MULT = 2.0     # Partial at 2x
@@ -70,6 +81,60 @@ CUT_LOSS_THRESHOLD = -0.50         # Cut if down 50%+
 def log(msg: str):
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] [SNIPER] {msg}", flush=True)
+
+
+def calculate_days_to_resolution(end_date_str: Optional[str]) -> Optional[int]:
+    """Calculate days until market resolution from endDate string."""
+    if not end_date_str:
+        return None
+    try:
+        end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+        now = datetime.now(end_date.tzinfo) if end_date.tzinfo else datetime.now()
+        delta = end_date - now
+        return max(0, delta.days)
+    except Exception:
+        return None
+
+
+def calculate_opportunity_score(
+    price: float,
+    days_to_resolution: Optional[int],
+    exit_liquidity_usd: float
+) -> float:
+    """
+    Calculate composite opportunity score (0.0 to 1.0, higher = better).
+
+    - Price score: Lower price = higher (8c=0, 1c=0.875)
+    - Resolution score: 1-30 days = 1.0, falls off outside
+    - Liquidity score: More exit liquidity = higher
+    """
+    # Price score: (max_price - price) / max_price
+    price_score = max(0, (MAX_ENTRY_PRICE - price) / MAX_ENTRY_PRICE)
+
+    # Resolution score
+    if days_to_resolution is None:
+        resolution_score = 0.0
+    elif days_to_resolution < MIN_RESOLUTION_DAYS:
+        resolution_score = days_to_resolution / MIN_RESOLUTION_DAYS * 0.5
+    elif days_to_resolution <= OPTIMAL_RESOLUTION_MAX:
+        resolution_score = 1.0  # Sweet spot
+    elif days_to_resolution <= MAX_RESOLUTION_DAYS:
+        excess = days_to_resolution - OPTIMAL_RESOLUTION_MAX
+        range_size = MAX_RESOLUTION_DAYS - OPTIMAL_RESOLUTION_MAX
+        resolution_score = 1.0 - (excess / range_size)
+    else:
+        resolution_score = 0.0
+
+    # Liquidity score: normalize against $1000 max
+    liquidity_score = min(1.0, exit_liquidity_usd / 1000.0)
+
+    # Weighted composite
+    return round(
+        WEIGHT_PRICE * price_score +
+        WEIGHT_RESOLUTION * resolution_score +
+        WEIGHT_LIQUIDITY * liquidity_score,
+        4
+    )
 
 
 @dataclass
@@ -95,6 +160,11 @@ class NewMarketEvent:
     token_id: str
     price: float
     timestamp: datetime
+    # Selectivity fields
+    end_date: Optional[str] = None
+    days_to_resolution: Optional[int] = None
+    exit_liquidity_usd: float = 0.0
+    score: float = 0.0
 
 
 class SniperTrader:
@@ -435,6 +505,21 @@ class SniperTrader:
                 # Mark as seen
                 self.seen_markets.add(slug)
 
+                # Extract and validate end date for selectivity
+                end_date_str = event.get("endDate")
+                days_to_res = calculate_days_to_resolution(end_date_str)
+
+                # Filter by resolution time
+                if days_to_res is None:
+                    self.portfolio.setdefault("skipped_no_end_date", 0)
+                    self.portfolio["skipped_no_end_date"] += 1
+                    continue
+
+                if days_to_res > MAX_RESOLUTION_DAYS:
+                    self.portfolio.setdefault("skipped_too_far_out", 0)
+                    self.portfolio["skipped_too_far_out"] += 1
+                    continue
+
                 # Analyze for mispricing
                 for market in event.get("markets", []):
                     try:
@@ -475,9 +560,11 @@ class SniperTrader:
                                 outcome=outcome,
                                 token_id=token_id,
                                 price=min_price,
-                                timestamp=datetime.now()
+                                timestamp=datetime.now(),
+                                end_date=end_date_str,
+                                days_to_resolution=days_to_res,
                             ))
-                            log(f"{prefix}: {event.get('title', '')[:40]}... {outcome} @ ${min_price:.3f}")
+                            log(f"{prefix}: {event.get('title', '')[:40]}... {outcome} @ ${min_price:.3f} ({days_to_res}d)")
 
                     except Exception:
                         continue
@@ -521,6 +608,34 @@ class SniperTrader:
             log(f"SKIP: No exit liq (${bid_liquidity:.0f}) for {event.title[:30]}...")
             return False
 
+        # Calculate final opportunity score with actual liquidity
+        event.exit_liquidity_usd = bid_liquidity
+        event.score = calculate_opportunity_score(
+            price=event.price,
+            days_to_resolution=event.days_to_resolution,
+            exit_liquidity_usd=bid_liquidity
+        )
+
+        # Position cap enforcement
+        current_positions = len(self.portfolio["positions"])
+        if current_positions >= MAX_ACTIVE_POSITIONS:
+            # Find worst scoring existing position
+            positions_with_scores = [
+                (i, p.get("score", 0.0))
+                for i, p in enumerate(self.portfolio["positions"])
+            ]
+            if positions_with_scores:
+                worst_idx, worst_score = min(positions_with_scores, key=lambda x: x[1])
+                if event.score <= worst_score:
+                    self.portfolio.setdefault("skipped_at_cap", 0)
+                    self.portfolio["skipped_at_cap"] += 1
+                    log(f"SKIP: At cap ({current_positions}/{MAX_ACTIVE_POSITIONS}), "
+                        f"score {event.score:.3f} <= worst {worst_score:.3f}")
+                    return False
+                # New opportunity beats worst - will replace after fill
+                log(f"CAP: Will replace pos #{worst_idx} (score {worst_score:.3f}) "
+                    f"with score {event.score:.3f}")
+
         # Simulate buy with last trade price for validation
         fill = self.simulate_buy(asks, max_spend, last_trade=last_trade)
         if not fill:
@@ -546,7 +661,26 @@ class SniperTrader:
             "entry_time": datetime.now().isoformat(),
             "slippage_pct": fill.slippage_pct,
             "status": "open",
+            "score": event.score,
+            "days_to_resolution": event.days_to_resolution,
         }
+
+        # Handle position cap replacement
+        if current_positions >= MAX_ACTIVE_POSITIONS:
+            # Find and close worst position to make room
+            positions_with_scores = [
+                (i, p.get("score", 0.0))
+                for i, p in enumerate(self.portfolio["positions"])
+            ]
+            if positions_with_scores:
+                worst_idx, worst_score = min(positions_with_scores, key=lambda x: x[1])
+                worst_pos = self.portfolio["positions"][worst_idx]
+                log(f"REPLACE: Closing '{worst_pos['outcome'][:20]}' (score {worst_score:.3f}) "
+                    f"for better opportunity")
+                # Mark as replaced (not a loss cut)
+                self.portfolio["positions"].pop(worst_idx)
+                self.portfolio.setdefault("replaced_positions", 0)
+                self.portfolio["replaced_positions"] += 1
 
         self.portfolio["positions"].append(position)
         self.portfolio["current_balance"] -= fill.total_cost
@@ -556,7 +690,9 @@ class SniperTrader:
         # Subscribe to WebSocket for real-time updates on this position
         self.ws.subscribe([event.token_id])
 
-        log(f"OPEN: {fill.shares_filled:.0f} {event.outcome} @ ${fill.avg_price:.4f} = ${fill.total_cost:.2f}")
+        days_str = f"{event.days_to_resolution}d" if event.days_to_resolution else "?"
+        log(f"OPEN: {fill.shares_filled:.0f} {event.outcome} @ ${fill.avg_price:.4f} = ${fill.total_cost:.2f} "
+            f"[score:{event.score:.3f} {days_str}]")
         return True
 
     async def check_exits(self):
@@ -697,12 +833,23 @@ class SniperTrader:
         ret = p['total_pnl'] / p['starting_balance'] * 100 if p['starting_balance'] > 0 else 0
         ws_status = "ON" if self.ws.running else "OFF"
 
+        # Calculate average score of open positions
+        scores = [pos.get("score", 0) for pos in p["positions"]]
+        avg_score = sum(scores) / len(scores) if scores else 0
+
+        # Skip counts
+        skipped_no_date = p.get("skipped_no_end_date", 0)
+        skipped_far = p.get("skipped_too_far_out", 0)
+        skipped_cap = p.get("skipped_at_cap", 0)
+        replaced = p.get("replaced_positions", 0)
+
         return f"""
 ╔══════════════════════════════════════════════════════╗
 ║  SNIPER TRADER - ${p['current_balance']:>10,.2f} balance
 ║  P&L: ${p['total_pnl']:>+10,.2f} ({ret:>+.1f}%)
-║  Open: {len(p['positions'])} | Trades: {p['total_trades']}
+║  Open: {len(p['positions'])}/{MAX_ACTIVE_POSITIONS} | Avg Score: {avg_score:.3f}
 ║  Flips: {p.get('flips',0)} | Cuts: {p.get('cuts',0)} | Resolved: {p.get('resolutions',0)}
+║  Skip: noDate:{skipped_no_date} farOut:{skipped_far} cap:{skipped_cap} | Repl: {replaced}
 ║  Scan: {self.scan_count} | WS: {ws_status} ({self.ws_updates} updates)
 ╚══════════════════════════════════════════════════════╝"""
 
@@ -738,7 +885,14 @@ async def run_sniper():
             # 1. Scan for new markets
             new_events = await trader.scan_new_markets()
 
-            # 2. Open positions on new opportunities
+            # 2. Sort by preliminary score (best first) and open positions
+            # Note: Final score uses actual liquidity from open_position
+            new_events.sort(
+                key=lambda e: calculate_opportunity_score(
+                    e.price, e.days_to_resolution, 0
+                ),
+                reverse=True
+            )
             for event in new_events:
                 await trader.open_position(event)
 
