@@ -23,6 +23,15 @@ import httpx
 from src.config import GAMMA_API_BASE, CLOB_API_BASE
 from src.new_market_monitor import NewMarketMonitor
 
+# Try to import SDK client (optional, falls back to httpx)
+try:
+    from src.polymarket_client import AsyncPolymarketClient
+    SDK_AVAILABLE = True
+except ImportError:
+    SDK_AVAILABLE = False
+
+USE_SDK = True  # Set to True to use SDK, False for raw httpx
+
 
 PAPER_PORTFOLIO_FILE = "./data/paper_portfolio.json"
 
@@ -35,9 +44,18 @@ MAX_POSITION_USD = 500.0 # Maximum $500 per trade
 MAX_BOOK_DEPTH_PCT = 0.10  # Only use 10% of available book depth
 MIN_LIQUIDITY_USD = 50.0   # Skip if less than $50 liquidity
 
-# Profit-taking thresholds
+# Profit-taking thresholds (Hybrid Sniper Strategy)
+TAKE_PROFIT_MULT = 1.5          # Sell all at 1.5x (50% gain) - quick flip
 TAKE_PARTIAL_PROFIT_MULT = 2.0  # Sell half at 2x
-TAKE_FULL_PROFIT_MULT = 5.0     # Sell all at 5x
+TAKE_FULL_PROFIT_MULT = 3.0     # Sell all at 3x (was 5x, now more aggressive)
+
+# Hybrid time-based exit thresholds
+FLIP_WINDOW_HOURS = 48          # Try to flip in first 48h
+CUT_LOSS_HOURS = 24             # Cut losses after 24h if down significantly
+CUT_LOSS_THRESHOLD = -0.50      # Cut if down 50%+
+
+# Exit liquidity minimum
+MIN_EXIT_LIQUIDITY_USD = 100.0  # Need at least $100 in bids to enter
 
 
 def log(msg: str):
@@ -68,6 +86,15 @@ class PaperTrader:
         self.starting_balance = starting_balance
         self.portfolio = self._load_portfolio()
         self.client = httpx.AsyncClient(timeout=30)
+        
+        # Initialize SDK client if available
+        self.sdk_client = None
+        if USE_SDK and SDK_AVAILABLE:
+            try:
+                self.sdk_client = AsyncPolymarketClient()
+                log("SDK client initialized")
+            except Exception as e:
+                log(f"SDK init failed, using httpx: {e}")
         log(f"Portfolio: ${self.portfolio['current_balance']:,.2f} balance, "
             f"{len(self.portfolio['positions'])} open positions")
 
@@ -93,6 +120,14 @@ class PaperTrader:
             "wins": 0,
             "losses": 0,
             "skipped_low_liquidity": 0,
+            # Hybrid sniper tracking
+            "flips": 0,                      # Successful price correction exits (1.5x-3x)
+            "flip_pnl": 0.0,                 # P&L from flips
+            "cuts": 0,                       # Loss cuts (-50% after 24h)
+            "cut_pnl": 0.0,                  # P&L from cuts (negative)
+            "resolutions": 0,                # Positions held to resolution (win/loss)
+            "resolution_pnl": 0.0,           # P&L from resolutions
+            "skipped_no_exit_liquidity": 0,  # Skipped due to no bid liquidity
         }
 
     def _save_portfolio(self):
@@ -113,7 +148,7 @@ class PaperTrader:
 
     async def fetch_order_book(self, token_id: str) -> Tuple[list, list]:
         """
-        Fetch order book from CLOB API.
+        Fetch order book from CLOB API (or SDK if available).
 
         Returns (bids, asks) where each is a list of OrderBookLevel.
         To BUY, we need to walk the ASKS (people selling to us).
@@ -121,6 +156,20 @@ class PaperTrader:
         if not token_id:
             return [], []
 
+        # Try SDK first if available
+        if self.sdk_client:
+            try:
+                book = await self.sdk_client.get_order_book(token_id)
+                if book:
+                    bids = [OrderBookLevel(price=l.price, size=l.size) for l in book.bids]
+                    asks = [OrderBookLevel(price=l.price, size=l.size) for l in book.asks]
+                    asks.sort(key=lambda x: x.price)
+                    bids.sort(key=lambda x: x.price, reverse=True)
+                    return bids, asks
+            except Exception as e:
+                log(f"SDK order book failed, falling back to httpx: {e}")
+
+        # Fallback to raw httpx
         try:
             url = f"{CLOB_API_BASE}/book?token_id={token_id}"
             resp = await self.client.get(url)
@@ -270,10 +319,36 @@ class PaperTrader:
             book_depth_used_pct=0,  # Not relevant for sells
         )
 
+    async def check_exit_liquidity(self, token_id: str) -> Tuple[bool, float, float]:
+        """
+        Check if there's enough bid liquidity to exit a position.
+
+        For snipers, exit liquidity is CRITICAL - need bids to sell into
+        when price corrects.
+
+        Returns (can_exit, best_bid_price, total_bid_liquidity_usd)
+        """
+        bids, _ = await self.fetch_order_book(token_id)
+
+        if not bids:
+            return False, 0.0, 0.0
+
+        # Calculate total bid liquidity (what we could sell into)
+        total_bid_liquidity = sum(level.price * level.size for level in bids)
+        best_bid = bids[0].price if bids else 0.0
+
+        # Need at least MIN_EXIT_LIQUIDITY_USD in bids to consider exiting later
+        can_exit = total_bid_liquidity >= MIN_EXIT_LIQUIDITY_USD
+
+        return can_exit, best_bid, total_bid_liquidity
+
     async def open_position(self, slug: str, title: str, outcome: str,
                            token_id: str, target_price: float) -> bool:
         """
         Open a new paper position with realistic order book simulation.
+
+        HYBRID SNIPER: Checks exit liquidity (bids) before entering.
+        Snipers need to be able to SELL when price corrects.
 
         Returns True if position was opened, False if skipped.
         """
@@ -295,6 +370,16 @@ class PaperTrader:
             self.portfolio["skipped_low_liquidity"] += 1
             return False
 
+        # HYBRID SNIPER: Check exit liquidity (bids) BEFORE entering
+        # Need bids to sell into when price corrects
+        total_bid_liquidity = sum(level.price * level.size for level in bids) if bids else 0.0
+        best_bid = bids[0].price if bids else 0.0
+
+        if total_bid_liquidity < MIN_EXIT_LIQUIDITY_USD:
+            log(f"SKIP: No exit liquidity (${total_bid_liquidity:.0f} < ${MIN_EXIT_LIQUIDITY_USD:.0f}) for {title[:30]}...")
+            self.portfolio["skipped_no_exit_liquidity"] = self.portfolio.get("skipped_no_exit_liquidity", 0) + 1
+            return False
+
         # Simulate the buy
         fill = self.simulate_buy(asks, max_spend)
 
@@ -303,7 +388,7 @@ class PaperTrader:
             self.portfolio["skipped_low_liquidity"] += 1
             return False
 
-        # Open the position
+        # Open the position with hybrid sniper tracking
         position = {
             "slug": slug,
             "title": title[:100],
@@ -317,6 +402,9 @@ class PaperTrader:
             "status": "open",
             "exit_price": None,
             "pnl": None,
+            # Hybrid sniper fields
+            "entry_best_bid": best_bid,  # Best bid at entry time
+            "entry_bid_liquidity": total_bid_liquidity,  # Total bid $ at entry
         }
 
         self.portfolio["positions"].append(position)
@@ -325,13 +413,19 @@ class PaperTrader:
         self._save_portfolio()
 
         log(f"OPENED: {fill.shares_filled:.1f} {outcome} @ ${fill.avg_price:.4f}")
-        log(f"  Cost: ${fill.total_cost:.2f} | Slippage: {fill.slippage_pct:.2f}%")
+        log(f"  Cost: ${fill.total_cost:.2f} | Slippage: {fill.slippage_pct:.2f}% | Exit liq: ${total_bid_liquidity:.0f}")
         return True
 
     async def check_profit_taking(self) -> list:
         """
-        Check open positions for profit-taking opportunities.
-        Uses actual order book to simulate realistic exits.
+        HYBRID SNIPER: Check open positions for profit-taking opportunities.
+
+        More aggressive thresholds:
+        - 1.5x: Quick flip - sell all (50% gain)
+        - 2x: Partial profit - sell half
+        - 3x: Full profit - sell all remaining
+
+        All profit-taking exits are tracked as "flips" (not resolutions).
         """
         profit_taken = []
         positions_copy = self.portfolio["positions"][:]
@@ -357,9 +451,8 @@ class PaperTrader:
 
                 price_mult = current_bid / entry_price
 
-                # Check for full profit (5x)
+                # Check for full profit (3x) - sell all remaining
                 if price_mult >= TAKE_FULL_PROFIT_MULT:
-                    # Simulate selling all shares
                     fill = self.simulate_sell(bids, pos["shares"])
 
                     if not fill:
@@ -367,24 +460,24 @@ class PaperTrader:
 
                     pnl = fill.total_cost - pos["amount_invested"]
 
-                    log(f"PROFIT 5x+: {pos['title'][:30]}...")
+                    log(f"FLIP 3x+: {pos['title'][:30]}...")
                     log(f"  Sold {fill.shares_filled:.1f} @ ${fill.avg_price:.4f} | P&L: ${pnl:+.2f}")
 
-                    pos["status"] = "profit_5x"
+                    pos["status"] = "flip_3x"
                     pos["exit_price"] = fill.avg_price
                     pos["pnl"] = pnl
 
                     self.portfolio["current_balance"] += fill.total_cost
                     self.portfolio["total_pnl"] += pnl
-                    self.portfolio["wins"] += 1
+                    self.portfolio["flips"] = self.portfolio.get("flips", 0) + 1
+                    self.portfolio["flip_pnl"] = self.portfolio.get("flip_pnl", 0.0) + pnl
                     self.portfolio["closed_positions"].append(pos)
                     self.portfolio["positions"].remove(pos)
 
-                    profit_taken.append({"pos": pos, "type": "full", "mult": price_mult})
+                    profit_taken.append({"pos": pos, "type": "flip_3x", "mult": price_mult})
 
-                # Check for partial profit (2x) - only if not already taken
+                # Check for partial profit (2x) - sell half
                 elif price_mult >= TAKE_PARTIAL_PROFIT_MULT and not pos.get("partial_profit_taken"):
-                    # Sell half the position
                     half_shares = pos["shares"] / 2
                     fill = self.simulate_sell(bids, half_shares)
 
@@ -394,7 +487,7 @@ class PaperTrader:
                     half_invested = pos["amount_invested"] / 2
                     pnl = fill.total_cost - half_invested
 
-                    log(f"PROFIT 2x: {pos['title'][:30]}...")
+                    log(f"FLIP 2x (partial): {pos['title'][:30]}...")
                     log(f"  Sold {fill.shares_filled:.1f} @ ${fill.avg_price:.4f} | P&L: ${pnl:+.2f}")
 
                     # Update position to reflect half sold
@@ -404,8 +497,34 @@ class PaperTrader:
 
                     self.portfolio["current_balance"] += fill.total_cost
                     self.portfolio["total_pnl"] += pnl
+                    self.portfolio["flip_pnl"] = self.portfolio.get("flip_pnl", 0.0) + pnl
 
-                    profit_taken.append({"pos": pos, "type": "partial", "mult": price_mult, "pnl": pnl})
+                    profit_taken.append({"pos": pos, "type": "flip_2x_partial", "mult": price_mult, "pnl": pnl})
+
+                # Check for quick flip (1.5x) - sell all (new aggressive threshold)
+                elif price_mult >= TAKE_PROFIT_MULT:
+                    fill = self.simulate_sell(bids, pos["shares"])
+
+                    if not fill:
+                        continue
+
+                    pnl = fill.total_cost - pos["amount_invested"]
+
+                    log(f"QUICK FLIP 1.5x: {pos['title'][:30]}...")
+                    log(f"  Sold {fill.shares_filled:.1f} @ ${fill.avg_price:.4f} | P&L: ${pnl:+.2f}")
+
+                    pos["status"] = "flip_1.5x"
+                    pos["exit_price"] = fill.avg_price
+                    pos["pnl"] = pnl
+
+                    self.portfolio["current_balance"] += fill.total_cost
+                    self.portfolio["total_pnl"] += pnl
+                    self.portfolio["flips"] = self.portfolio.get("flips", 0) + 1
+                    self.portfolio["flip_pnl"] = self.portfolio.get("flip_pnl", 0.0) + pnl
+                    self.portfolio["closed_positions"].append(pos)
+                    self.portfolio["positions"].remove(pos)
+
+                    profit_taken.append({"pos": pos, "type": "flip_1.5x", "mult": price_mult})
 
             except Exception as e:
                 continue
@@ -416,7 +535,12 @@ class PaperTrader:
         return profit_taken
 
     async def check_resolutions(self) -> list:
-        """Check if any open positions have resolved."""
+        """
+        HYBRID SNIPER: Check if any open positions have resolved.
+
+        These are positions that didn't flip in time (held past 48h window)
+        and went to resolution. Tracked separately from flips.
+        """
         resolved = []
         positions_copy = self.portfolio["positions"][:]
 
@@ -448,19 +572,22 @@ class PaperTrader:
                             payout = pos["shares"] * 1.0
                             pnl = payout - pos["amount_invested"]
                             self.portfolio["wins"] += 1
-                            log(f"WON: {pos['title'][:30]}... P&L: +${pnl:.2f}")
+                            log(f"RESOLUTION WON: {pos['title'][:30]}... P&L: +${pnl:.2f}")
                         else:
                             payout = 0
                             pnl = -pos["amount_invested"]
                             self.portfolio["losses"] += 1
-                            log(f"LOST: {pos['title'][:30]}... P&L: -${pos['amount_invested']:.2f}")
+                            log(f"RESOLUTION LOST: {pos['title'][:30]}... P&L: -${pos['amount_invested']:.2f}")
 
-                        pos["status"] = "won" if won else "lost"
+                        pos["status"] = "resolution_won" if won else "resolution_lost"
                         pos["exit_price"] = 1.0 if won else 0.0
                         pos["pnl"] = pnl
 
                         self.portfolio["current_balance"] += payout
                         self.portfolio["total_pnl"] += pnl
+                        # Track as resolution (distinct from flips)
+                        self.portfolio["resolutions"] = self.portfolio.get("resolutions", 0) + 1
+                        self.portfolio["resolution_pnl"] = self.portfolio.get("resolution_pnl", 0.0) + pnl
                         self.portfolio["closed_positions"].append(pos)
                         self.portfolio["positions"].remove(pos)
 
@@ -474,6 +601,81 @@ class PaperTrader:
             self._save_portfolio()
 
         return resolved
+
+    async def check_time_based_exits(self) -> list:
+        """
+        HYBRID SNIPER: Time-based exit logic.
+
+        1. If down 50%+ after 24h → cut losses (don't hold to zero like cry.eth2)
+        2. After 48h with no flip → position enters "resolution mode" (no forced exit)
+
+        Returns list of positions that were cut.
+        """
+        cuts = []
+        now = datetime.now()
+        positions_copy = self.portfolio["positions"][:]
+
+        for pos in positions_copy:
+            try:
+                entry_time = datetime.fromisoformat(pos["entry_time"])
+                hours_held = (now - entry_time).total_seconds() / 3600
+
+                # Only check positions held more than CUT_LOSS_HOURS
+                if hours_held < CUT_LOSS_HOURS:
+                    continue
+
+                # Get current bid price
+                token_id = pos.get("token_id", "")
+                if not token_id:
+                    continue
+
+                bids, _ = await self.fetch_order_book(token_id)
+                if not bids:
+                    continue
+
+                current_bid = bids[0].price
+                entry_price = pos["entry_price"]
+
+                if entry_price <= 0:
+                    continue
+
+                # Calculate P&L percentage
+                pnl_pct = (current_bid - entry_price) / entry_price
+
+                # Rule 1: Cut losses if down 50%+ after 24h
+                if pnl_pct < CUT_LOSS_THRESHOLD:
+                    fill = self.simulate_sell(bids, pos["shares"])
+                    if not fill:
+                        continue
+
+                    pnl = fill.total_cost - pos["amount_invested"]
+
+                    log(f"CUT LOSS: {pos['title'][:30]}... {pnl_pct:.0%} after {hours_held:.0f}h")
+                    log(f"  Sold {fill.shares_filled:.1f} @ ${fill.avg_price:.4f} | P&L: ${pnl:+.2f}")
+
+                    pos["status"] = "cut_loss"
+                    pos["exit_price"] = fill.avg_price
+                    pos["pnl"] = pnl
+
+                    self.portfolio["current_balance"] += fill.total_cost
+                    self.portfolio["total_pnl"] += pnl
+                    self.portfolio["cuts"] = self.portfolio.get("cuts", 0) + 1
+                    self.portfolio["cut_pnl"] = self.portfolio.get("cut_pnl", 0.0) + pnl
+                    self.portfolio["closed_positions"].append(pos)
+                    self.portfolio["positions"].remove(pos)
+
+                    cuts.append(pos)
+
+                # Rule 2: After 48h, position enters "resolution mode"
+                # No forced exit - let check_resolutions handle it
+
+            except Exception:
+                continue
+
+        if cuts:
+            self._save_portfolio()
+
+        return cuts
 
     def get_summary(self) -> str:
         """Get portfolio summary."""
@@ -553,8 +755,8 @@ Skipped (low liq): {p.get('skipped_low_liquidity', 0)}"""
 async def run_paper_trading():
     """Run paper trading on new market opportunities."""
     log("=" * 50)
-    log("  PAPER TRADING - Realistic Liquidity Mode")
-    log("  Checks order book depth before trading")
+    log("  PAPER TRADING - HYBRID SNIPER Mode")
+    log("  Exit liquidity check | 1.5x/2x/3x flips | 24h loss cuts")
     log("=" * 50)
 
     trader = PaperTrader(starting_balance=10000.0)
@@ -575,7 +777,7 @@ async def run_paper_trading():
                     log(f"  {opp.cheap_outcome_name} @ ${opp.prices[opp.cheap_outcome_idx]:.4f}")
                     log(f"  Score: {opp.mispricing_score:.0%} | Token: {opp.token_id[:20]}...")
 
-                    # Open paper position with realistic order book checking
+                    # Open paper position with exit liquidity checking
                     success = await trader.open_position(
                         slug=opp.slug,
                         title=opp.title,
@@ -587,12 +789,17 @@ async def run_paper_trading():
                     if success:
                         log(f"\n{trader.get_summary()}\n")
 
-            # Check for profit-taking opportunities
+            # Check for profit-taking opportunities (flips)
             profit_taken = await trader.check_profit_taking()
             if profit_taken:
                 log(f"\n{trader.get_summary()}\n")
 
-            # Check for resolved positions
+            # Check for time-based exits (cut losses after 24h if down 50%+)
+            cuts = await trader.check_time_based_exits()
+            if cuts:
+                log(f"\n{trader.get_summary()}\n")
+
+            # Check for resolved positions (held to resolution)
             resolved = await trader.check_resolutions()
             if resolved:
                 log(f"\n{trader.get_summary()}\n")
