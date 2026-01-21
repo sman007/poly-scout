@@ -671,10 +671,9 @@ def format_alert(wallet: dict) -> str:
     source = wallet.get("source", "leaderboard")
 
     strategy_name = strat.get("likely_strategy", "UNKNOWN")
-    verdict = profit.get("verdict", "SKIP")
 
     # Source tag
-    source_tag = "[X.COM]" if source == "twitter" else "[LEADERBOARD]"
+    source_tag = "X.COM" if source == "twitter" else "STRATEGY"
 
     # Speed indicator
     resolution_mins = wallet.get("resolution_mins", 1440)
@@ -687,69 +686,70 @@ def format_alert(wallet: dict) -> str:
     else:
         speed = f"{resolution_mins // 60}h"
 
+    # Format profit in k/M
+    total_profit = wallet.get('total_profit', 0)
+    if total_profit >= 1_000_000:
+        profit_str = f"${total_profit / 1_000_000:.1f}M"
+    elif total_profit >= 1_000:
+        profit_str = f"${total_profit / 1_000:.0f}k"
+    else:
+        profit_str = f"${total_profit:.0f}"
+
+    monthly_est = profit.get('our_monthly_estimate', 0)
+    if monthly_est >= 1_000:
+        monthly_str = f"${monthly_est / 1_000:.1f}k"
+    else:
+        monthly_str = f"${monthly_est:.0f}"
+
+    capital = profit.get('min_capital_required', 0)
+    if capital >= 1_000:
+        capital_str = f"${capital / 1_000:.0f}k"
+    else:
+        capital_str = f"${capital:.0f}"
+
     # Build compact message
-    msg = f"""{source_tag} {strategy_name}
+    address = wallet['address']
+    pattern = "Arb" if strat.get('is_arb_pattern') else "Directional"
+    wallet_count = saturation.get('wallet_count', 0)
+    trend = saturation.get('trend', 'unknown')
+    account_age = wallet.get('account_age_days', 0)
 
-PROFIT POTENTIAL
-Est. monthly: ${profit.get('our_monthly_estimate', 0):,.0f}
-Monthly ROI: {profit.get('monthly_roi_pct', 0):.0f}%
-Capital needed: ${profit.get('min_capital_required', 0):,.0f}
-Verdict: {verdict}
+    msg = f"""{source_tag}: {strategy_name}
 
-HOW IT WORKS
-{strat.get('edge_explanation', 'Unknown strategy')}
-Resolution: {speed}
-Pattern: {"Arb (both sides)" if strat.get('is_arb_pattern') else "Directional"}
-Avg trade: ${strat.get('avg_trade_size', 0):.0f}
+{profit_str} profit | {account_age}d old | {speed} res
+${strat.get('avg_trade_size', 0):.0f}/trade | {pattern}
 
-COMPETITION
-Wallets: {saturation.get('wallet_count', 0)}
-Trend: {saturation.get('trend', 'unknown')}
+Est: {monthly_str}/mo @ {capital_str} ({profit.get('monthly_roi_pct', 0):.0f}% ROI)
+Competition: {wallet_count} wallets ({trend})
 
-WALLET
-{wallet['address'][:20]}...
-Total profit: ${wallet['total_profit']:,.0f}
-Last active: {wallet.get('hours_since_trade', 0):.0f}h ago
-
-https://polymarket.com/profile/{wallet['address']}"""
+polymarket.com/profile/{address[:8]}...{address[-4:]}"""
 
     return msg
 
 
 def format_sportsbook_alert(opp: SportsbookOpportunity, validation: ValidationResult) -> str:
     """Format verified sportsbook opportunity alert."""
-    action_emoji = "+" if opp.action == "BUY" else "-"
-
-    # Format validation status
-    if validation.is_valid:
-        status = "VERIFIED"
+    # Format liquidity
+    liq = validation.liquidity_usd
+    if liq >= 1_000:
+        liq_str = f"${liq / 1_000:.0f}k"
     else:
-        status = f"FAILED: {validation.failure_reason}"
+        liq_str = f"${liq:.0f}"
 
-    msg = f"""[VERIFIED PROFIT] SPORTSBOOK MISPRICING
+    # Calculate ROI
+    roi_pct = (validation.expected_profit / 500) * 100 if validation.expected_profit > 0 else 0
 
-ACTION: {opp.action} {opp.outcome} @ {opp.pm_price:.1%}
-Market: {opp.market_slug}
+    # Format date compactly
+    res_date = opp.resolution_time.strftime('%b %d')
 
-EDGE VERIFICATION
-- Sportsbook avg: {opp.sb_price:.1%} ({opp.books_count} books)
-- Edge: {opp.edge_pct:+.1f}%
-- Liquidity: ${validation.liquidity_usd:,.0f}
-- Slippage: {validation.slippage_pct:.1f}%
+    msg = f"""EDGE: {opp.action} {opp.outcome} @ {opp.pm_price:.0%} (fair: {opp.sb_price:.0%})
 
-EXPECTED PROFIT ($500 position)
-- Entry: ${500:.0f} @ {validation.effective_price:.1%}
-- Fair value: {opp.sb_price:.1%}
-- Expected profit: ${validation.expected_profit:.2f}
-- Fees: ${validation.fees_usd:.2f}
+{opp.edge_pct:+.0f}% edge | {liq_str} liq | {validation.slippage_pct:.1f}% slip
+$500 -> ${validation.expected_profit:.0f} profit ({roi_pct:.0f}% ROI)
 
-VALIDATION: {status}
+{opp.event_title} | {opp.sport} | {res_date}
 
-GAME: {opp.event_title}
-Sport: {opp.sport}
-Resolution: {opp.resolution_time.strftime('%Y-%m-%d %H:%M')}
-
-https://polymarket.com/event/{opp.market_slug}"""
+polymarket.com/event/{opp.market_slug}"""
 
     return msg
 

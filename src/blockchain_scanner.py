@@ -99,27 +99,26 @@ class SmartMoneyWallet:
 
     def to_telegram_message(self) -> str:
         """Format wallet for Telegram alert."""
-        wins_text = "\n".join(f"  - {w}" for w in self.notable_wins[:3]) if self.notable_wins else "  None yet"
+        # Format portfolio value in k/M
+        pv = self.portfolio_value_usd
+        if pv >= 1_000_000:
+            pv_str = f"${pv / 1_000_000:.1f}M"
+        elif pv >= 1_000:
+            pv_str = f"${pv / 1_000:.0f}k"
+        else:
+            pv_str = f"${pv:.0f}"
 
-        return f"""SMART MONEY DETECTED
+        # Format notable wins compactly
+        wins_compact = " | ".join(self.notable_wins[:3]) if self.notable_wins else "None"
 
-Wallet: {self.address[:10]}...{self.address[-6:]}
-Age: {self.wallet_age_days} days
-Portfolio: ${self.portfolio_value_usd:,.0f}
+        return f"""SMART MONEY: {self.address[:8]}...{self.address[-4:]}
 
-Growth:
-  7d:  {self.growth_7d_pct:+.0f}%
-  30d: {self.growth_30d_pct:+.0f}%
-  90d: {self.growth_90d_pct:+.0f}%
+{pv_str} | {self.win_rate:.0%} WR | {self.wallet_age_days}d old | {self.growth_30d_pct:+.0f}% (30d)
+{self.total_trades} trades | {self.markets_participated} markets | {self.risk_score}
 
-Win Rate: {self.win_rate:.0%} ({self.total_trades} trades)
-Markets: {self.markets_participated}
-Risk: {self.risk_score}
+Top: {wins_compact}
 
-Notable Wins:
-{wins_text}
-
-https://polymarket.com/profile/{self.address}"""
+polymarket.com/profile/{self.address[:8]}...{self.address[-4:]}"""
 
 
 @dataclass
