@@ -48,12 +48,13 @@ MAX_CONCURRENT_REQUESTS = 10       # Parallel order book fetches
 # Position sizing
 MAX_POSITION_PCT = 0.05            # 5% of portfolio per trade
 MIN_POSITION_USD = 5.0
-MAX_POSITION_USD = 500.0
+MAX_POSITION_USD = 300.0
 
 # Liquidity constraints
 MAX_BOOK_DEPTH_PCT = 0.10
 MIN_LIQUIDITY_USD = 50.0
 MIN_EXIT_LIQUIDITY_USD = 100.0     # Must have bids to exit
+MAX_SLIPPAGE_PCT = 75.0            # Reject fills with >75% slippage
 
 # Profit-taking (aggressive sniper targets)
 TAKE_PROFIT_MULT = 1.25            # Quick flip at 1.25x (25% gain)
@@ -352,6 +353,11 @@ class SniperTrader:
         avg_price = total_cost / total_shares
         slippage = ((avg_price - best_price) / best_price * 100) if best_price > 0 else 0
 
+        # Reject excessive slippage
+        if slippage > MAX_SLIPPAGE_PCT:
+            log(f"SKIP: Slippage too high ({slippage:.0f}% > {MAX_SLIPPAGE_PCT}%)")
+            return None
+
         # Sanity check against last trade price (if available)
         # Reject if fill price deviates >20% from last trade (stale order book)
         if last_trade and last_trade > 0:
@@ -448,7 +454,7 @@ class SniperTrader:
 
                         # Check for mispricing - cheap longshot (<15¢)
                         min_price = min(prices)
-                        if min_price < 0.15:  # Cheap outcome
+                        if min_price < 0.08:  # Cheap outcome (<8c)
                             idx = prices.index(min_price)
                             outcome = outcomes[idx] if idx < len(outcomes) else "Unknown"
                             token_id = token_ids[idx] if idx < len(token_ids) else ""
