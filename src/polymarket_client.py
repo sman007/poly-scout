@@ -131,6 +131,43 @@ class PolymarketClient:
             log(f"Error fetching markets: {e}")
             return []
 
+    def get_last_trade_price(self, token_id: str) -> Optional[float]:
+        """
+        Get last trade price for a token.
+
+        More accurate than midpoint for fill simulation as it reflects
+        actual executed trades.
+        """
+        try:
+            return float(self.client.get_last_trade_price(token_id))
+        except Exception:
+            return None
+
+    def get_server_time(self) -> Optional[int]:
+        """
+        Get server time in milliseconds.
+
+        Useful for time synchronization to ensure order timestamps
+        are accurate.
+        """
+        try:
+            return int(self.client.get_server_time())
+        except Exception:
+            return None
+
+    def get_time_offset(self) -> int:
+        """
+        Calculate time offset between local and server time.
+
+        Returns offset in milliseconds (positive = local ahead of server).
+        """
+        import time
+        local_ms = int(time.time() * 1000)
+        server_ms = self.get_server_time()
+        if server_ms:
+            return local_ms - server_ms
+        return 0
+
 
 class MarketWebSocket:
     """
@@ -339,6 +376,21 @@ class AsyncPolymarketClient:
         """Async markets fetch."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._client.get_markets)
+
+    async def get_last_trade_price(self, token_id: str) -> Optional[float]:
+        """Async last trade price fetch."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._client.get_last_trade_price, token_id)
+
+    async def get_server_time(self) -> Optional[int]:
+        """Async server time fetch."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._client.get_server_time)
+
+    async def get_time_offset(self) -> int:
+        """Async time offset calculation."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._client.get_time_offset)
 
 
 if __name__ == "__main__":

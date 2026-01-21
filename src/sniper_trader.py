@@ -199,6 +199,7 @@ class SniperTrader:
             "resolution_pnl": 0.0,
             "skipped_low_liquidity": 0,
             "skipped_no_exit_liquidity": 0,
+            "skipped_stale_book": 0,
         }
 
     def _save_portfolio(self):
@@ -297,7 +298,24 @@ class SniperTrader:
                 books[tid] = (bids, asks)
         return books
 
-    def simulate_buy(self, asks: List[OrderBookLevel], max_spend: float) -> Optional[FillResult]:
+    async def get_last_trade_price(self, token_id: str) -> Optional[float]:
+        """
+        Get last trade price for more accurate fill simulation.
+
+        Falls back to midpoint if no recent trades.
+        """
+        try:
+            return await self.sdk_client.get_last_trade_price(token_id)
+        except Exception:
+            return None
+
+    def simulate_buy(self, asks: List[OrderBookLevel], max_spend: float, last_trade: Optional[float] = None) -> Optional[FillResult]:
+        """
+        Simulate market buy with order book walking.
+
+        If last_trade is provided, validates that fill price is within 20% of
+        recent trading activity to detect stale order books.
+        """
         if not asks:
             return None
 
@@ -333,6 +351,14 @@ class SniperTrader:
 
         avg_price = total_cost / total_shares
         slippage = ((avg_price - best_price) / best_price * 100) if best_price > 0 else 0
+
+        # Sanity check against last trade price (if available)
+        # Reject if fill price deviates >20% from last trade (stale order book)
+        if last_trade and last_trade > 0:
+            price_deviation = abs(avg_price - last_trade) / last_trade
+            if price_deviation > 0.20:
+                log(f"SKIP: Order book stale - fill ${avg_price:.4f} vs last trade ${last_trade:.4f}")
+                return None
 
         return FillResult(total_shares, avg_price, total_cost, slippage)
 
@@ -448,7 +474,7 @@ class SniperTrader:
         return events
 
     async def open_position(self, event: NewMarketEvent) -> bool:
-        """Open position with exit liquidity check."""
+        """Open position with exit liquidity check and last trade validation."""
         max_spend = min(
             self.portfolio["current_balance"] * MAX_POSITION_PCT,
             MAX_POSITION_USD
@@ -457,7 +483,9 @@ class SniperTrader:
         if max_spend < MIN_POSITION_USD:
             return False
 
+        # Fetch order book and last trade price in parallel
         bids, asks = await self.fetch_order_book(event.token_id)
+        last_trade = await self.get_last_trade_price(event.token_id)
 
         if not asks:
             self.portfolio["skipped_low_liquidity"] += 1
@@ -470,9 +498,18 @@ class SniperTrader:
             log(f"SKIP: No exit liq (${bid_liquidity:.0f}) for {event.title[:30]}...")
             return False
 
-        fill = self.simulate_buy(asks, max_spend)
+        # Simulate buy with last trade price for validation
+        fill = self.simulate_buy(asks, max_spend, last_trade=last_trade)
         if not fill:
-            self.portfolio["skipped_low_liquidity"] += 1
+            # Check if it was a stale book skip (last_trade exists but fill failed)
+            if last_trade and last_trade > 0 and asks:
+                best_ask = asks[0].price
+                if abs(best_ask - last_trade) / last_trade > 0.20:
+                    self.portfolio["skipped_stale_book"] += 1
+                else:
+                    self.portfolio["skipped_low_liquidity"] += 1
+            else:
+                self.portfolio["skipped_low_liquidity"] += 1
             return False
 
         position = {
@@ -661,6 +698,10 @@ async def run_sniper():
     log("=" * 60)
 
     trader = SniperTrader(starting_balance=10000.0)
+
+    # Check time sync with server
+    time_offset = await trader.sdk_client.get_time_offset()
+    log(f"Server time offset: {time_offset}ms (local {'ahead' if time_offset > 0 else 'behind'})")
 
     # Start WebSocket for real-time order book updates
     trader.start_websocket()
