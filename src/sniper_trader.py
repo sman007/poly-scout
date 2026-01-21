@@ -481,6 +481,50 @@ class SniperTrader:
         start = time.time()
         events = []
 
+        # Warmup: paginate through ALL markets to build complete seen set
+        is_warmup = not self.seen_markets
+
+        if is_warmup:
+            log("Warmup: fetching ALL markets (this may take a moment)...")
+            offset = 0
+            page_size = 500
+            total_fetched = 0
+
+            while True:
+                try:
+                    resp = await self.http_client.get(
+                        f"{GAMMA_API_BASE}/events?active=true&closed=false&limit={page_size}&offset={offset}"
+                    )
+                    if resp.status_code != 200:
+                        break
+
+                    data = resp.json()
+                    if not data:
+                        break  # No more results
+
+                    for event in data:
+                        slug = event.get("slug", "")
+                        if slug:
+                            self.seen_markets.add(slug)
+
+                    total_fetched += len(data)
+                    log(f"Warmup: fetched {total_fetched} events ({len(self.seen_markets)} unique slugs)...")
+
+                    if len(data) < page_size:
+                        break  # Last page
+
+                    offset += page_size
+                    await asyncio.sleep(0.1)  # Rate limit
+
+                except Exception as e:
+                    log(f"Warmup fetch error: {e}")
+                    break
+
+            log(f"Warmup complete: tracking {len(self.seen_markets)} existing markets")
+            self._save_seen_markets()
+            return events  # Return empty - no positions during warmup
+
+        # After warmup: Only check first page for NEW markets (they appear at top)
         try:
             resp = await self.http_client.get(
                 f"{GAMMA_API_BASE}/events?active=true&closed=false&limit=200"
@@ -489,19 +533,6 @@ class SniperTrader:
                 return events
 
             data = resp.json()
-
-            # Warmup: just mark all markets as seen, don't enter any positions
-            is_warmup = not self.seen_markets
-
-            if is_warmup:
-                # WARMUP: Only mark markets as seen, don't create any events
-                for event in data:
-                    slug = event.get("slug", "")
-                    if slug:
-                        self.seen_markets.add(slug)
-                log(f"Warmup complete: tracking {len(self.seen_markets)} existing markets")
-                self._save_seen_markets()
-                return events  # Return empty - no positions during warmup
 
             # After warmup: Only process NEW markets (not in seen_markets)
             for event in data:
