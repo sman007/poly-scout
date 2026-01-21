@@ -28,12 +28,16 @@ from src.sportsbook import SportsbookComparator, SportsbookOpportunity
 from src.twitter_scanner import TwitterScanner
 from src.validator import EdgeValidator, ValidationResult
 from src.new_market_monitor import NewMarketMonitor, NewMarketOpportunity
+from src.blockchain_scanner import BlockchainScanner
 from src.config import (
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, POLYGON_RPC_URL,
     MIN_EDGE_PCT, MIN_LIQUIDITY_USD, MIN_EXPECTED_PROFIT,
     SCAN_INTERVAL_LEADERBOARD, SCAN_INTERVAL_SPORTSBOOK, SCAN_INTERVAL_TWITTER,
     SCAN_INTERVAL_NEW_MARKETS, SEEN_OPPORTUNITIES_FILE
 )
+
+# Blockchain scanner interval (15 minutes)
+SCAN_INTERVAL_BLOCKCHAIN = 900
 
 load_dotenv()
 
@@ -1074,6 +1078,35 @@ async def run_twitter_scan(saturation_history: dict, seen_wallets: set) -> list[
     return results
 
 
+async def run_blockchain_scan() -> list:
+    """Scan Polygon blockchain for smart money wallets."""
+    log(f"[BLOCKCHAIN] Scanning for smart money...")
+
+    results = []
+
+    try:
+        scanner = BlockchainScanner(POLYGON_RPC_URL)
+
+        # Find wallets meeting smart money criteria
+        smart_wallets = await scanner.find_smart_money()
+
+        for wallet in smart_wallets:
+            log(f"[BLOCKCHAIN] FOUND: {wallet.address[:12]}... "
+                f"${wallet.portfolio_value_usd:,.0f}, {wallet.win_rate:.0%} WR, "
+                f"{wallet.growth_30d_pct:+.0f}% 30d")
+            results.append(wallet)
+
+        await scanner.close()
+
+    except Exception as e:
+        log(f"[BLOCKCHAIN] Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    log(f"[BLOCKCHAIN] {len(results)} smart money wallets found")
+    return results
+
+
 async def daemon_loop():
     log("=" * 60)
     log("  POLY-SCOUT v2: AUTONOMOUS PROFIT AGENT")
@@ -1084,6 +1117,7 @@ async def daemon_loop():
     log("    - Leaderboard wallets (strategy replication)")
     log("    - Sportsbook comparison (PM vs odds)")
     log("    - X.com/Twitter (whale alerts, tips)")
+    log("    - Blockchain scan (smart money detection)")
     log("")
     log("  Validation:")
     log(f"    - Min edge: {MIN_EDGE_PCT}%")
@@ -1094,6 +1128,7 @@ async def daemon_loop():
     log(f"    - Leaderboard: {SCAN_INTERVAL_LEADERBOARD // 60} min")
     log(f"    - Sportsbook: {SCAN_INTERVAL_SPORTSBOOK // 60} min")
     log(f"    - Twitter: {SCAN_INTERVAL_TWITTER // 60} min")
+    log(f"    - Blockchain: {SCAN_INTERVAL_BLOCKCHAIN // 60} min")
     log(f"    - New Markets: {SCAN_INTERVAL_NEW_MARKETS}s")
     log("")
     log(f"  Telegram: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}")
@@ -1110,6 +1145,7 @@ async def daemon_loop():
     last_leaderboard_scan = 0
     last_sportsbook_scan = 0
     last_twitter_scan = 0
+    last_blockchain_scan = 0
     last_new_market_scan = 0
 
     # Create validator for all sources
@@ -1166,6 +1202,23 @@ async def daemon_loop():
                 save_seen_wallets(seen_wallets)
                 last_twitter_scan = now
 
+            # === BLOCKCHAIN SCAN ===
+            if now - last_blockchain_scan >= SCAN_INTERVAL_BLOCKCHAIN:
+                try:
+                    blockchain_wallets = await run_blockchain_scan()
+
+                    for wallet in blockchain_wallets:
+                        # SmartMoneyWallet objects have to_telegram_message() method
+                        await send_telegram(wallet.to_telegram_message())
+                        alerts_sent += 1
+
+                except Exception as e:
+                    log(f"[BLOCKCHAIN] Scan error: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                last_blockchain_scan = now
+
             # === NEW MARKET SCAN ===
             # Scan for new markets (no Telegram alerts - paper trader handles this separately)
             if now - last_new_market_scan >= SCAN_INTERVAL_NEW_MARKETS:
@@ -1194,6 +1247,8 @@ async def daemon_loop():
             next_scans.append(("Sportsbook", SCAN_INTERVAL_SPORTSBOOK - (datetime.now().timestamp() - last_sportsbook_scan)))
         if last_twitter_scan > 0:
             next_scans.append(("Twitter", SCAN_INTERVAL_TWITTER - (datetime.now().timestamp() - last_twitter_scan)))
+        if last_blockchain_scan > 0:
+            next_scans.append(("Blockchain", SCAN_INTERVAL_BLOCKCHAIN - (datetime.now().timestamp() - last_blockchain_scan)))
         if last_new_market_scan > 0:
             next_scans.append(("New Markets", SCAN_INTERVAL_NEW_MARKETS - (datetime.now().timestamp() - last_new_market_scan)))
 
