@@ -194,7 +194,8 @@ class BlockchainScanner:
 
             # Chunk size - free RPCs have ~50 block limit for logs
             # Paid RPCs (Alchemy) support much larger ranges
-            CHUNK_SIZE = 50 if "polygon-rpc.com" in self.rpc_url else 2000
+            # Free public RPCs have very strict limits
+            CHUNK_SIZE = 10 if "polygon-rpc.com" in self.rpc_url else 2000
 
             trades = []
             current_block = from_block
