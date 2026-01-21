@@ -56,7 +56,7 @@ MIN_LIQUIDITY_USD = 50.0
 MIN_EXIT_LIQUIDITY_USD = 100.0     # Must have bids to exit
 
 # Profit-taking (aggressive sniper targets)
-TAKE_PROFIT_MULT = 1.5             # Quick flip at 1.5x
+TAKE_PROFIT_MULT = 1.25            # Quick flip at 1.25x (25% gain)
 TAKE_PARTIAL_PROFIT_MULT = 2.0     # Partial at 2x
 TAKE_FULL_PROFIT_MULT = 3.0        # Full exit at 3x
 
