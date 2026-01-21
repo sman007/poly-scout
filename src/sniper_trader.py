@@ -20,7 +20,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Callable
+from typing import Optional, Tuple, List, Callable, Dict
 from queue import Queue
 import time
 
@@ -100,9 +100,10 @@ class SniperTrader:
     Performance-optimized sniper trader.
 
     Uses:
+    - WebSocket streaming for real-time order book updates on positions
     - SDK client for order books (HTTP/2 + keep-alive)
     - Async parallel fetching
-    - WebSocket-ready event queue
+    - Gamma API polling for new market detection only
     """
 
     def __init__(self, starting_balance: float = 10000.0):
@@ -113,8 +114,10 @@ class SniperTrader:
         self.http_client = httpx.AsyncClient(timeout=ORDER_BOOK_TIMEOUT)
         self.sdk_client = AsyncPolymarketClient()
 
-        # Event queue for WebSocket events
-        self.event_queue: Queue = Queue()
+        # WebSocket for real-time order book streaming
+        self.ws = MarketWebSocket(on_message=self._handle_ws_message)
+        self.order_book_cache: Dict[str, Tuple[List[OrderBookLevel], List[OrderBookLevel]]] = {}
+        self._cache_lock = threading.Lock()
 
         # Seen markets (for deduplication)
         self.seen_markets: set = self._load_seen_markets()
@@ -122,10 +125,51 @@ class SniperTrader:
         # Stats
         self.scan_count = 0
         self.last_scan_time = 0.0
+        self.ws_updates = 0
 
         log(f"Initialized: ${self.portfolio['current_balance']:,.2f} | "
             f"{len(self.portfolio['positions'])} positions | "
             f"{len(self.seen_markets)} seen markets")
+
+    def _handle_ws_message(self, data: dict):
+        """Handle WebSocket order book update."""
+        try:
+            # Parse Polymarket WebSocket message format
+            asset_id = data.get("asset_id") or data.get("market")
+            if not asset_id:
+                return
+
+            bids_data = data.get("bids", [])
+            asks_data = data.get("asks", [])
+
+            bids = [OrderBookLevel(float(b.get("price", 0)), float(b.get("size", 0))) for b in bids_data]
+            asks = [OrderBookLevel(float(a.get("price", 0)), float(a.get("size", 0))) for a in asks_data]
+
+            # Sort: bids descending, asks ascending
+            bids.sort(key=lambda x: x.price, reverse=True)
+            asks.sort(key=lambda x: x.price)
+
+            with self._cache_lock:
+                self.order_book_cache[asset_id] = (bids, asks)
+                self.ws_updates += 1
+
+        except Exception:
+            pass
+
+    def start_websocket(self):
+        """Start WebSocket and subscribe to held positions."""
+        self.ws.start()
+        time.sleep(1)  # Wait for connection
+
+        # Subscribe to all held position token IDs
+        token_ids = [pos["token_id"] for pos in self.portfolio["positions"]]
+        if token_ids:
+            self.ws.subscribe(token_ids)
+            log(f"WebSocket subscribed to {len(token_ids)} held positions")
+
+    def stop_websocket(self):
+        """Stop WebSocket connection."""
+        self.ws.stop()
 
     def _load_portfolio(self) -> dict:
         try:
@@ -185,11 +229,23 @@ class SniperTrader:
         except Exception:
             pass
 
-    async def fetch_order_book(self, token_id: str) -> Tuple[List[OrderBookLevel], List[OrderBookLevel]]:
-        """Fetch order book via SDK (fast)."""
+    def get_cached_order_book(self, token_id: str) -> Optional[Tuple[List[OrderBookLevel], List[OrderBookLevel]]]:
+        """Get order book from WebSocket cache (instant)."""
+        with self._cache_lock:
+            return self.order_book_cache.get(token_id)
+
+    async def fetch_order_book(self, token_id: str, use_cache: bool = True) -> Tuple[List[OrderBookLevel], List[OrderBookLevel]]:
+        """Fetch order book - uses WebSocket cache first, then SDK."""
         if not token_id:
             return [], []
 
+        # Try WebSocket cache first (instant)
+        if use_cache:
+            cached = self.get_cached_order_book(token_id)
+            if cached:
+                return cached
+
+        # Fallback to SDK
         try:
             book = await self.sdk_client.get_order_book(token_id)
             if book:
@@ -197,6 +253,9 @@ class SniperTrader:
                 asks = [OrderBookLevel(price=l.price, size=l.size) for l in book.asks]
                 asks.sort(key=lambda x: x.price)
                 bids.sort(key=lambda x: x.price, reverse=True)
+                # Update cache
+                with self._cache_lock:
+                    self.order_book_cache[token_id] = (bids, asks)
                 return bids, asks
         except Exception:
             pass
@@ -214,6 +273,9 @@ class SniperTrader:
                         for l in data.get("asks", [])]
                 asks.sort(key=lambda x: x.price)
                 bids.sort(key=lambda x: x.price, reverse=True)
+                # Update cache
+                with self._cache_lock:
+                    self.order_book_cache[token_id] = (bids, asks)
                 return bids, asks
         except Exception:
             pass
@@ -431,6 +493,9 @@ class SniperTrader:
         self.portfolio["total_trades"] += 1
         self._save_portfolio()
 
+        # Subscribe to WebSocket for real-time updates on this position
+        self.ws.subscribe([event.token_id])
+
         log(f"OPEN: {fill.shares_filled:.0f} {event.outcome} @ ${fill.avg_price:.4f} = ${fill.total_cost:.2f}")
         return True
 
@@ -513,6 +578,9 @@ class SniperTrader:
         self.portfolio["positions"].remove(pos)
         self._save_portfolio()
 
+        # Unsubscribe from WebSocket
+        self.ws.unsubscribe([pos["token_id"]])
+
     async def check_resolutions(self):
         """Check for resolved markets."""
         if not self.portfolio["positions"]:
@@ -553,6 +621,9 @@ class SniperTrader:
                         self.portfolio["closed_positions"].append(pos)
                         self.portfolio["positions"].remove(pos)
 
+                        # Unsubscribe from WebSocket
+                        self.ws.unsubscribe([pos["token_id"]])
+
                         log(f"RESOLVED: {pos['title'][:30]}... {'WON' if won else 'LOST'} ${pnl:+.2f}")
                         break
 
@@ -564,6 +635,7 @@ class SniperTrader:
     def get_status(self) -> str:
         p = self.portfolio
         ret = p['total_pnl'] / p['starting_balance'] * 100 if p['starting_balance'] > 0 else 0
+        ws_status = "ON" if self.ws.running else "OFF"
 
         return f"""
 ╔══════════════════════════════════════════════════════╗
@@ -571,23 +643,28 @@ class SniperTrader:
 ║  P&L: ${p['total_pnl']:>+10,.2f} ({ret:>+.1f}%)
 ║  Open: {len(p['positions'])} | Trades: {p['total_trades']}
 ║  Flips: {p.get('flips',0)} | Cuts: {p.get('cuts',0)} | Resolved: {p.get('resolutions',0)}
-║  Scan: {self.scan_count} | Last: {self.last_scan_time*1000:.0f}ms
+║  Scan: {self.scan_count} | WS: {ws_status} ({self.ws_updates} updates)
 ╚══════════════════════════════════════════════════════╝"""
 
     async def close(self):
         self._save_portfolio()
         self._save_seen_markets()
+        self.stop_websocket()
         await self.http_client.aclose()
 
 
 async def run_sniper():
-    """Main sniper loop - optimized for speed."""
+    """Main sniper loop - optimized for speed with WebSocket streaming."""
     log("=" * 60)
-    log("  SNIPER TRADER - OPTIMAL PERFORMANCE MODE")
-    log(f"  Scan interval: {SCAN_INTERVAL_SECONDS}s | Parallel fetches: {MAX_CONCURRENT_REQUESTS}")
+    log("  SNIPER TRADER - WEBSOCKET STREAMING MODE")
+    log(f"  Gamma poll: {SCAN_INTERVAL_SECONDS}s | Order books: WebSocket real-time")
     log("=" * 60)
 
     trader = SniperTrader(starting_balance=10000.0)
+
+    # Start WebSocket for real-time order book updates
+    trader.start_websocket()
+
     log(trader.get_status())
 
     try:
