@@ -600,6 +600,171 @@ def calculate_replicability(strategy_params: dict, saturation: dict, profit: dic
     return max(1, min(10, score))
 
 
+# =============================================================================
+# Strategy Reports - Aggregate wallets by strategy to answer "what actually works"
+# =============================================================================
+
+STRATEGY_EXPLANATIONS = {
+    STRATEGY_BINANCE_SIGNAL: {
+        "edge": "Exploit price lag between Binance spot and Polymarket 15-min markets",
+        "how": "When Binance BTC moves 2%+, PM 15-min markets lag by 30-120 seconds. Buy direction before PM catches up.",
+        "requirements": "Binance WebSocket feed, PM API, <5s execution",
+        "risk": "LOW if execution is fast, HIGH if slow (price already moved)",
+    },
+    STRATEGY_SPREAD_CAPTURE: {
+        "edge": "Buy YES + NO when combined price < $1, guaranteed profit at resolution",
+        "how": "Find markets where YES @ $0.45 + NO @ $0.50 = $0.95. Buy both, get $1 at resolution.",
+        "requirements": "PM API, capital to hold positions until resolution",
+        "risk": "VERY LOW - profit is guaranteed if you can execute both sides",
+    },
+    STRATEGY_SPORTS: {
+        "edge": "PM sports prices lag Vegas/sportsbook lines by hours",
+        "how": "Compare PM to DraftKings/FanDuel. When PM is 5%+ off, take the edge.",
+        "requirements": "Sportsbook API or odds feeds, PM API",
+        "risk": "MEDIUM - sports outcomes are uncertain, edge is in the odds",
+    },
+    STRATEGY_POLITICAL: {
+        "edge": "Information advantage on political events (polls, news)",
+        "how": "React faster than market to polls, news, policy announcements",
+        "requirements": "News feeds, polling data, fast manual or automated trading",
+        "risk": "MEDIUM-HIGH - requires genuine information edge",
+    },
+    STRATEGY_NEW_MARKET_SNIPER: {
+        "edge": "New markets often mispriced at extreme odds (5-15 cents)",
+        "how": "Monitor for new markets, buy at extreme prices before market corrects",
+        "requirements": "PM API polling for new markets, fast execution",
+        "risk": "MEDIUM - some extreme prices are correct, most aren't",
+    },
+    STRATEGY_UNKNOWN: {
+        "edge": "Unknown - needs manual analysis",
+        "how": "Review wallet trades to understand the pattern",
+        "requirements": "Manual research",
+        "risk": "UNKNOWN",
+    },
+}
+
+
+def generate_strategy_report(wallets: list[dict]) -> list[str]:
+    """
+    Aggregate wallets by strategy and generate actionable reports.
+
+    Returns a list of Telegram messages (one per strategy with enough data).
+    """
+    if not wallets:
+        return []
+
+    # Group wallets by strategy
+    by_strategy = {}
+    for w in wallets:
+        strat = w.get("strategy_params", {}).get("likely_strategy", STRATEGY_UNKNOWN)
+        if strat not in by_strategy:
+            by_strategy[strat] = []
+        by_strategy[strat].append(w)
+
+    reports = []
+
+    for strategy, strat_wallets in by_strategy.items():
+        # Skip if too few wallets or unknown strategy
+        if len(strat_wallets) < 2 and strategy != STRATEGY_BINANCE_SIGNAL:
+            continue
+
+        # Aggregate metrics
+        total_profit = sum(w.get("profit_analysis", {}).get("their_total_profit", 0) for w in strat_wallets)
+        avg_roi = sum(w.get("profit_analysis", {}).get("monthly_roi_pct", 0) for w in strat_wallets) / len(strat_wallets)
+        avg_score = sum(w.get("replicability_score", 0) for w in strat_wallets) / len(strat_wallets)
+        build_count = sum(1 for w in strat_wallets if w.get("profit_analysis", {}).get("verdict") == "BUILD")
+
+        # Get common top markets
+        all_markets = []
+        for w in strat_wallets:
+            top = w.get("strategy_params", {}).get("top_markets", [])
+            all_markets.extend([m[0] for m in top[:3]])  # Top 3 from each wallet
+
+        market_counts = {}
+        for m in all_markets:
+            market_counts[m] = market_counts.get(m, 0) + 1
+        common_markets = sorted(market_counts.items(), key=lambda x: -x[1])[:3]
+
+        # Get strategy explanation
+        explanation = STRATEGY_EXPLANATIONS.get(strategy, STRATEGY_EXPLANATIONS[STRATEGY_UNKNOWN])
+
+        # Calculate saturation/competition
+        wallet_count = len(strat_wallets)
+        if wallet_count >= 10:
+            saturation = "HIGH (10+ wallets)"
+            edge_status = "DECLINING"
+        elif wallet_count >= 5:
+            saturation = "MODERATE (5-9 wallets)"
+            edge_status = "STABLE"
+        else:
+            saturation = "LOW (<5 wallets)"
+            edge_status = "STRONG"
+
+        # Determine overall verdict
+        if build_count >= len(strat_wallets) * 0.6 and avg_score >= 7:
+            verdict = "BUILD BOT"
+            verdict_reason = "High success rate, replicable"
+        elif build_count >= len(strat_wallets) * 0.4:
+            verdict = "MONITOR"
+            verdict_reason = "Promising but needs more validation"
+        else:
+            verdict = "SKIP"
+            verdict_reason = "Low replicability or saturated"
+
+        # Resolution speed
+        resolution_mins = STRATEGY_RESOLUTION_MINUTES.get(strategy, 60 * 24)
+        if resolution_mins <= 15:
+            speed = "FAST (15 min)"
+        elif resolution_mins <= 180:
+            speed = "MEDIUM (hours)"
+        else:
+            speed = "SLOW (days)"
+
+        # Format report
+        strategy_name = {
+            STRATEGY_BINANCE_SIGNAL: "Binance 15-min Arbitrage",
+            STRATEGY_SPREAD_CAPTURE: "Spread Capture (YES+NO)",
+            STRATEGY_SPORTS: "Sports Betting Edge",
+            STRATEGY_POLITICAL: "Political Markets",
+            STRATEGY_NEW_MARKET_SNIPER: "New Market Sniping",
+            STRATEGY_UNKNOWN: "Unknown Strategy",
+        }.get(strategy, strategy)
+
+        report = f"""STRATEGY REPORT: {strategy_name}
+
+THE EDGE
+{explanation['edge']}
+
+HOW IT WORKS
+{explanation['how']}
+
+PROOF ({wallet_count} wallets)
+Combined profit: ${total_profit:,.0f}
+Avg monthly ROI: {avg_roi:.0f}%
+Replicability: {avg_score:.0f}/10
+Resolution: {speed}
+
+COMPETITION
+Saturation: {saturation}
+Edge status: {edge_status}
+
+REQUIREMENTS
+{explanation['requirements']}
+Risk: {explanation['risk']}
+
+VERDICT: {verdict}
+{verdict_reason}"""
+
+        # Add common markets if available
+        if common_markets:
+            markets_str = "\n".join([f"  - {m[0][:40]}..." for m in common_markets])
+            report += f"\n\nTOP MARKETS:\n{markets_str}"
+
+        reports.append(report)
+
+    return reports
+
+
 def calculate_priority_score(strategy_params: dict, profit: dict) -> float:
     """
     Calculate overall priority score for sorting.
@@ -1172,6 +1337,14 @@ async def daemon_loop():
                         seen_wallets.add(wallet["address"])
                         alerts_sent += 1
                     save_seen_wallets(seen_wallets)
+
+                # Generate and send strategy reports (aggregated view)
+                strategy_reports = generate_strategy_report(results)
+                if strategy_reports:
+                    log(f"[STRATEGY] Sending {len(strategy_reports)} strategy reports")
+                    for report in strategy_reports:
+                        await send_telegram(report)
+                        alerts_sent += 1
 
                 last_leaderboard_scan = now
 
