@@ -207,14 +207,17 @@ class BlockchainScanner:
 
             # Chunk size depends on RPC tier:
             # - Alchemy Free: 10 blocks max for eth_getLogs
-            # - Alchemy PAYG: much larger ranges
-            # - Public polygon-rpc.com: ~50 blocks but rate limited
+            # - Public polygon-rpc.com: 5 blocks max (very restrictive)
+            # - Paid RPCs: much larger ranges
             if "alchemy.com" in self.rpc_url:
                 CHUNK_SIZE = 10  # Alchemy Free tier limit
+                DELAY_BETWEEN_CHUNKS = 0.1
             elif "polygon-rpc.com" in self.rpc_url:
-                CHUNK_SIZE = 50
+                CHUNK_SIZE = 5  # Public RPC is very restrictive
+                DELAY_BETWEEN_CHUNKS = 0.5  # Rate limit: 2 req/sec
             else:
                 CHUNK_SIZE = 2000  # Paid RPCs
+                DELAY_BETWEEN_CHUNKS = 0
 
             trades = []
             current_block = from_block
@@ -248,9 +251,9 @@ class BlockchainScanner:
 
                 current_block = chunk_end + 1
 
-                # Rate limit for free RPCs
-                if "polygon-rpc.com" in self.rpc_url:
-                    await asyncio.sleep(0.2)
+                # Rate limit between chunks
+                if DELAY_BETWEEN_CHUNKS > 0:
+                    await asyncio.sleep(DELAY_BETWEEN_CHUNKS)
 
             log(f"Found {len(trades)} trades in {blocks} blocks")
             return trades
