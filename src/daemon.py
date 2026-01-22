@@ -1,14 +1,17 @@
 """
 Auto-pilot daemon for poly-scout.
-Detects explosive growth patterns in Polymarket wallets.
-Finds emerging alpha traders BEFORE they become famous.
-Only alerts after reverse-engineering the strategy.
+Detects mispriced markets and arbitrage opportunities on Polymarket.
 
-v2: Integrated multi-source scanning with edge validation
-- Leaderboard scanning (existing)
-- Sportsbook comparison (new)
-- X.com/Nitter scanning (new)
-- Edge validation before alerts (new)
+Active sources:
+- Sportsbook comparison (PM vs Vegas odds)
+- New market monitoring (mispricing detection)
+- Blockchain scanning (smart money detection)
+
+Disabled sources (ENABLE_WALLET_ALERTS=false):
+- Leaderboard wallet scanning
+- X.com/Twitter scanning
+
+All alerts require edge validation (min 3% edge, $1k liquidity).
 """
 
 import asyncio
@@ -55,7 +58,7 @@ MAX_ACCOUNT_AGE_DAYS = int(os.getenv("MAX_ACCOUNT_AGE_DAYS", "30"))
 MIN_TRADES_WEEK = int(os.getenv("MIN_TRADES_WEEK", "30"))
 MIN_LEADERBOARD_PROFIT = float(os.getenv("MIN_LEADERBOARD_PROFIT", "1000"))
 
-SEEN_WALLETS_FILE = Path("/root/poly-scout/data/seen_wallets.json")
+SEEN_WALLETS_FILE = Path("./data/seen_wallets.json")
 
 # Strategy classifications
 STRATEGY_BINANCE_SIGNAL = "BINANCE_SIGNAL"  # Directional trading based on Binance price moves
@@ -116,7 +119,7 @@ STRATEGY_EMOJI = {
 }
 
 # Saturation history file for tracking competition over time
-SATURATION_HISTORY_FILE = Path("/root/poly-scout/data/saturation_history.json")
+SATURATION_HISTORY_FILE = Path("./data/saturation_history.json")
 
 
 def load_seen_wallets() -> set:
@@ -124,7 +127,7 @@ def load_seen_wallets() -> set:
         try:
             with open(SEEN_WALLETS_FILE) as f:
                 return set(json.load(f))
-        except:
+        except (json.JSONDecodeError, IOError):
             pass
     return set()
 
@@ -141,7 +144,7 @@ def load_saturation_history() -> dict:
         try:
             with open(SATURATION_HISTORY_FILE) as f:
                 return json.load(f)
-        except:
+        except (json.JSONDecodeError, IOError):
             pass
     return {}
 
@@ -160,7 +163,7 @@ def load_seen_opportunities() -> set:
         if path.exists():
             with open(path) as f:
                 return set(json.load(f))
-    except:
+    except (json.JSONDecodeError, IOError):
         pass
     return set()
 
@@ -1282,11 +1285,14 @@ async def daemon_loop():
     log("=" * 60)
     log("  Goal: Find and validate profitable opportunities")
     log("")
-    log("  Sources:")
-    log("    - Leaderboard wallets (strategy replication)")
+    log("  Active Sources:")
     log("    - Sportsbook comparison (PM vs odds)")
-    log("    - X.com/Twitter (whale alerts, tips)")
+    log("    - New market monitoring (mispricing detection)")
     log("    - Blockchain scan (smart money detection)")
+    log("")
+    log("  Disabled (ENABLE_WALLET_ALERTS=false):")
+    log("    - Leaderboard wallets")
+    log("    - X.com/Twitter")
     log("")
     log("  Validation:")
     log(f"    - Min edge: {MIN_EDGE_PCT}%")
