@@ -1308,7 +1308,7 @@ async def daemon_loop():
     saturation_history = load_saturation_history()
     log(f"Loaded {len(seen_wallets)} seen wallets, {len(seen_opportunities)} seen opportunities")
 
-    await send_telegram("[POLY-SCOUT v2 STARTED]\n\nAutonomous profit hunting active.\n\nSources: Leaderboard + Sportsbook + Twitter\nValidation: Edge > 3%, Liquidity > $1k")
+    await send_telegram("[POLY-SCOUT v2 STARTED]\n\nAutonomous profit hunting active.\n\nSources: Sportsbook + New Markets + Blockchain\nValidation: Edge > 3%, Liquidity > $1k")
 
     # Track last scan times
     last_leaderboard_scan = 0
