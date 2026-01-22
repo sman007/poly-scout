@@ -288,12 +288,22 @@ class BlockchainScanner:
                     if resp_all.status_code == 200:
                         activities = resp_all.json()
                         if activities:
-                            # Find oldest timestamp
-                            oldest = min(a.get("timestamp", "") for a in activities if a.get("timestamp"))
-                            if oldest:
-                                first_date = datetime.fromisoformat(oldest.replace("Z", "+00:00"))
+                            # Find oldest timestamp - handle both int (Unix ms) and string (ISO)
+                            timestamps = [a.get("timestamp") for a in activities if a.get("timestamp")]
+                            if not timestamps:
+                                return None
+                            oldest = min(timestamps)
+
+                            # Parse timestamp - could be int (Unix ms) or string (ISO)
+                            if isinstance(oldest, (int, float)):
+                                # Unix milliseconds
+                                first_date = datetime.fromtimestamp(oldest / 1000)
+                                age = (datetime.now() - first_date).days
+                            else:
+                                # ISO string format
+                                first_date = datetime.fromisoformat(str(oldest).replace("Z", "+00:00"))
                                 age = (datetime.now(first_date.tzinfo) - first_date).days
-                                return age
+                            return age
             return None
         except Exception as e:
             log(f"Error getting wallet age for {address[:10]}: {e}")
