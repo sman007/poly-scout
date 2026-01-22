@@ -285,7 +285,7 @@ class MarketWebSocket:
         """Get next message from queue (non-blocking)."""
         try:
             return self.message_queue.get(timeout=timeout)
-        except:
+        except Exception:
             return None
 
 
