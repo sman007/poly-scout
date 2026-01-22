@@ -41,8 +41,9 @@ MIN_WIN_RATE = 0.70         # 70% win rate
 MIN_PORTFOLIO_VALUE = 1000  # $1k minimum
 
 # Scan settings
-BLOCKS_PER_SCAN = 5000      # ~2.5 hours of blocks (2 sec/block)
-SCAN_INTERVAL_MINUTES = 15
+# Note: With Alchemy Free (10-block limit), 1000 blocks = 100 API calls
+BLOCKS_PER_SCAN = 1000      # ~33 minutes of blocks (2 sec/block)
+SCAN_INTERVAL_MINUTES = 30  # Scan every 30 minutes
 
 # Seen wallets file
 SEEN_SMART_MONEY_FILE = Path("data/seen_smart_money.json")
@@ -204,10 +205,16 @@ class BlockchainScanner:
 
             log(f"Scanning blocks {from_block:,} to {latest_block:,}...")
 
-            # Chunk size - free RPCs have ~50 block limit for logs
-            # Paid RPCs (Alchemy) support much larger ranges
-            # Free public RPCs have very strict limits
-            CHUNK_SIZE = 10 if "polygon-rpc.com" in self.rpc_url else 2000
+            # Chunk size depends on RPC tier:
+            # - Alchemy Free: 10 blocks max for eth_getLogs
+            # - Alchemy PAYG: much larger ranges
+            # - Public polygon-rpc.com: ~50 blocks but rate limited
+            if "alchemy.com" in self.rpc_url:
+                CHUNK_SIZE = 10  # Alchemy Free tier limit
+            elif "polygon-rpc.com" in self.rpc_url:
+                CHUNK_SIZE = 50
+            else:
+                CHUNK_SIZE = 2000  # Paid RPCs
 
             trades = []
             current_block = from_block
