@@ -18,6 +18,7 @@ from web3 import Web3
 from web3.exceptions import Web3Exception
 
 from src.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from src.wallet_validator import validate_wallet, ValidationResult
 
 
 def log(msg: str):
@@ -96,9 +97,10 @@ class SmartMoneyWallet:
     total_trades: int
     notable_wins: List[str] = field(default_factory=list)
     risk_score: str = "unknown"  # "likely_insider" | "skilled_trader" | "bot" | "unknown"
+    validation: Optional[ValidationResult] = None  # Statistical validation result
 
     def to_telegram_message(self) -> str:
-        """Format wallet for Telegram alert."""
+        """Format wallet for Telegram alert with validation stats."""
         # Format portfolio value in k/M
         pv = self.portfolio_value_usd
         if pv >= 1_000_000:
@@ -111,14 +113,25 @@ class SmartMoneyWallet:
         # Format notable wins compactly
         wins_compact = " | ".join(self.notable_wins[:3]) if self.notable_wins else "None"
 
-        return f"""SMART MONEY: {self.address[:8]}...{self.address[-4:]}
+        # Include validation stats if available
+        val_str = ""
+        if self.validation:
+            val_str = f"""
+STATISTICAL VALIDATION
+Win Rate: {self.validation.win_rate:.1%} ({self.validation.sample_size} trades)
+P-value: {self.validation.win_rate_pvalue:.6f}
+Consistency: {self.validation.consistency_variance:.4f} variance
+Confidence: {self.validation.confidence_level}
+"""
 
+        return f"""BLOCKCHAIN DISCOVERY: {self.address[:8]}...{self.address[-4:]}
+{val_str}
 {pv_str} | {self.win_rate:.0%} WR | {self.wallet_age_days}d old | {self.growth_30d_pct:+.0f}% (30d)
 {self.total_trades} trades | {self.markets_participated} markets | {self.risk_score}
 
 Top: {wins_compact}
 
-polymarket.com/profile/{self.address[:8]}...{self.address[-4:]}"""
+polymarket.com/profile/{self.address}"""
 
 
 @dataclass
@@ -466,6 +479,29 @@ class BlockchainScanner:
             # Calculate first transaction date
             first_tx_date = datetime.now() - timedelta(days=age_days) if age_days else None
 
+            # ============================================================
+            # STATISTICAL VALIDATION - Only alert on proven performers
+            # ============================================================
+            # Fetch positions and activities for validation
+            positions = portfolio.get("positions", [])
+
+            # Fetch activities for consistency testing
+            activities_url = f"{DATA_API}/activity?user={address}&limit=500"
+            try:
+                activities_resp = await self.http_client.get(activities_url)
+                activities = activities_resp.json() if activities_resp.status_code == 200 else []
+            except Exception:
+                activities = []
+
+            # Run statistical validation
+            validation = validate_wallet(positions, activities)
+
+            if not validation.is_valid:
+                log(f"  REJECTED {address[:10]}... - {validation.rejection_reason}")
+                return None
+
+            log(f"  VALIDATED {address[:10]}... - {validation.confidence_level} confidence, p={validation.win_rate_pvalue:.6f}")
+
             return SmartMoneyWallet(
                 address=address,
                 wallet_age_days=age_days,
@@ -478,7 +514,8 @@ class BlockchainScanner:
                 win_rate=win_rate,
                 total_trades=total_trades,
                 notable_wins=pnl_data["notable_wins"],
-                risk_score=risk_score
+                risk_score=risk_score,
+                validation=validation
             )
 
         except Exception as e:

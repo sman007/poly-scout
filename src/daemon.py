@@ -1392,7 +1392,8 @@ async def daemon_loop():
 
                     for wallet in blockchain_wallets:
                         # SmartMoneyWallet objects have to_telegram_message() method
-                        await send_telegram(wallet.to_telegram_message(), is_wallet_alert=True)
+                        # is_wallet_alert=False bypasses ENABLE_WALLET_ALERTS (blockchain discovery is validated)
+                        await send_telegram(wallet.to_telegram_message(), is_wallet_alert=False)
                         alerts_sent += 1
 
                 except Exception as e:
