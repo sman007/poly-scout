@@ -219,8 +219,9 @@ class BlockchainScanner:
             trades = []
             current_block = from_block
 
-            while current_block < latest_block:
-                chunk_end = min(current_block + CHUNK_SIZE, latest_block)
+            while current_block <= latest_block:
+                # -1 because block ranges are inclusive (block 0 to 9 = 10 blocks)
+                chunk_end = min(current_block + CHUNK_SIZE - 1, latest_block)
 
                 try:
                     # Get OrderFilled events (web3.py v6+ uses snake_case params)
