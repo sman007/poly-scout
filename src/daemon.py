@@ -33,7 +33,7 @@ from src.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, POLYGON_RPC_URL,
     MIN_EDGE_PCT, MIN_LIQUIDITY_USD, MIN_EXPECTED_PROFIT,
     SCAN_INTERVAL_LEADERBOARD, SCAN_INTERVAL_SPORTSBOOK, SCAN_INTERVAL_TWITTER,
-    SCAN_INTERVAL_NEW_MARKETS, SEEN_OPPORTUNITIES_FILE
+    SCAN_INTERVAL_NEW_MARKETS, SEEN_OPPORTUNITIES_FILE, ENABLE_WALLET_ALERTS
 )
 
 # Blockchain scanner interval (15 minutes)
@@ -790,9 +790,13 @@ def calculate_priority_score(strategy_params: dict, profit: dict) -> float:
     return round(priority, 2)
 
 
-async def send_telegram(message: str):
+async def send_telegram(message: str, is_wallet_alert: bool = False):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         log("[TG] Not configured")
+        return
+
+    if is_wallet_alert and not ENABLE_WALLET_ALERTS:
+        log("[TG] Wallet alerts disabled (ENABLE_WALLET_ALERTS=false)")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -1333,7 +1337,7 @@ async def daemon_loop():
                 if new_wallets:
                     log(f"[ALERT] {len(new_wallets)} NEW profitable strategy(ies)!")
                     for wallet in new_wallets:
-                        await send_telegram(format_alert(wallet))
+                        await send_telegram(format_alert(wallet), is_wallet_alert=True)
                         seen_wallets.add(wallet["address"])
                         alerts_sent += 1
                     save_seen_wallets(seen_wallets)
@@ -1343,7 +1347,7 @@ async def daemon_loop():
                 if strategy_reports:
                     log(f"[STRATEGY] Sending {len(strategy_reports)} strategy reports")
                     for report in strategy_reports:
-                        await send_telegram(report)
+                        await send_telegram(report, is_wallet_alert=True)
                         alerts_sent += 1
 
                 last_leaderboard_scan = now
@@ -1368,7 +1372,7 @@ async def daemon_loop():
 
                 for wallet in twitter_wallets:
                     if wallet["address"] not in seen_wallets:
-                        await send_telegram(format_alert(wallet))
+                        await send_telegram(format_alert(wallet), is_wallet_alert=True)
                         seen_wallets.add(wallet["address"])
                         alerts_sent += 1
 
@@ -1382,7 +1386,7 @@ async def daemon_loop():
 
                     for wallet in blockchain_wallets:
                         # SmartMoneyWallet objects have to_telegram_message() method
-                        await send_telegram(wallet.to_telegram_message())
+                        await send_telegram(wallet.to_telegram_message(), is_wallet_alert=True)
                         alerts_sent += 1
 
                 except Exception as e:

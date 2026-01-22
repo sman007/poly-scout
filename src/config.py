@@ -21,6 +21,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+ENABLE_WALLET_ALERTS = os.getenv("ENABLE_WALLET_ALERTS", "false").lower() == "true"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "4f966793260d394e5fe551bd517d4957")
 
 # Polygon RPC for blockchain scanning (get free key from Alchemy)
