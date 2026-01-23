@@ -165,6 +165,33 @@ def calculate_temp_probability(
         return norm_cdf(z + 0.5) - norm_cdf(z - 0.5)
 
 
+def parse_bracket_title(title: str) -> Optional[Dict]:
+    """
+    Parse groupItemTitle from API like "-6°C or below", "-5°C", "0°C or higher".
+
+    Returns dict with temp and bracket_type.
+    """
+    if not title:
+        return None
+
+    # Pattern: {number}°C [or below|or higher]
+    match = re.match(r"(-?\d+)°C(?: or (below|higher))?", title)
+    if not match:
+        return None
+
+    temp = int(match.group(1))
+    modifier = match.group(2)
+
+    if modifier == "below":
+        bracket_type = "or_lower"
+    elif modifier == "higher":
+        bracket_type = "or_higher"
+    else:
+        bracket_type = "exact"
+
+    return {"temp": temp, "bracket_type": bracket_type, "unit": "C"}
+
+
 def parse_market_question(question: str) -> Optional[Dict]:
     """
     Parse Polymarket weather question to extract city, date, temp bracket.
@@ -213,41 +240,73 @@ def parse_market_question(question: str) -> Optional[Dict]:
     }
 
 
-def scan_weather_markets() -> List[Dict]:
+def scan_weather_markets(cities: List[str] = None, days_ahead: int = 3) -> List[Dict]:
     """
     Scan Polymarket for active weather/temperature markets.
 
+    Uses slug-based event lookup (the only working API method for daily temps).
+    Pattern: highest-temperature-in-{city}-on-{month}-{day}
+
+    Args:
+        cities: List of cities to scan (defaults to Hans323's cities)
+        days_ahead: How many days forward to look
+
     Returns list of markets with relevant data.
     """
+    if cities is None:
+        cities = ["seoul", "london", "wellington"]
+
     markets = []
 
-    try:
-        # Get all active markets and filter for temperature
-        r = requests.get(
-            "https://gamma-api.polymarket.com/markets?closed=false&limit=500",
-            timeout=30
-        )
-        all_markets = r.json()
+    for city in cities:
+        for days in range(days_ahead + 1):
+            date = datetime.now() + timedelta(days=days)
+            month = date.strftime("%B").lower()
+            day = date.day
+            date_str = date.strftime("%Y-%m-%d")
 
-        for m in all_markets:
-            question = m.get("question", "").lower()
-            if "temperature" in question and "highest" in question:
-                parsed = parse_market_question(m.get("question", ""))
-                if parsed:
-                    markets.append({
-                        "raw": m,
-                        "parsed": parsed,
-                        "condition_id": m.get("conditionId", ""),
-                        "slug": m.get("slug", ""),
-                        "volume": m.get("volume", 0),
-                        "liquidity": m.get("liquidityNum", 0)
-                    })
+            slug = f"highest-temperature-in-{city}-on-{month}-{day}"
 
-        log(f"Found {len(markets)} active weather markets")
+            try:
+                r = requests.get(
+                    f"https://gamma-api.polymarket.com/events/slug/{slug}",
+                    timeout=15
+                )
 
-    except Exception as e:
-        log(f"Error scanning markets: {e}")
+                if r.status_code == 200:
+                    event = r.json()
+                    event_markets = event.get("markets", [])
 
+                    for m in event_markets:
+                        # Parse temperature bracket from groupItemTitle
+                        bracket_title = m.get("groupItemTitle", "")
+                        parsed = parse_bracket_title(bracket_title)
+
+                        if parsed:
+                            markets.append({
+                                "event": event,
+                                "market": m,
+                                "parsed": parsed,
+                                "city": city,
+                                "date": date_str,
+                                "slug": slug,
+                                "condition_id": m.get("conditionId", ""),
+                                "volume": float(m.get("volume", 0) or 0),
+                                "liquidity": float(m.get("liquidityNum", 0) or 0)
+                            })
+
+                    if event_markets:
+                        log(f"Found {len(event_markets)} brackets for {city} {month} {day}")
+                elif r.status_code == 404:
+                    # Market doesn't exist for this date - normal
+                    pass
+                else:
+                    log(f"Unexpected status {r.status_code} for {slug}")
+
+            except Exception as e:
+                log(f"Error fetching {slug}: {e}")
+
+    log(f"Total: {len(markets)} weather market brackets")
     return markets
 
 
@@ -261,19 +320,28 @@ def find_weather_edges(min_edge_pct: float = 5.0) -> List[WeatherEdge]:
     Returns:
         List of detected edges
     """
+    import json as json_module
+
     edges = []
     markets = scan_weather_markets()
 
+    # Cache forecasts per city/date to avoid duplicate API calls
+    forecast_cache = {}
+
     for market_data in markets:
         parsed = market_data["parsed"]
-        city = parsed["city"]
-        date = parsed["date"]
+        city = market_data["city"]
+        date = market_data["date"]
         temp = parsed["temp"]
-        unit = parsed["unit"]
+        unit = parsed.get("unit", "C")
         bracket_type = parsed["bracket_type"]
 
-        # Get weather forecast
-        forecast = fetch_weather_forecast(city, date)
+        # Get weather forecast (with caching)
+        cache_key = f"{city}_{date}"
+        if cache_key not in forecast_cache:
+            forecast_cache[cache_key] = fetch_weather_forecast(city, date)
+        forecast = forecast_cache[cache_key]
+
         if not forecast:
             continue
 
@@ -286,9 +354,14 @@ def find_weather_edges(min_edge_pct: float = 5.0) -> List[WeatherEdge]:
         # Calculate our probability
         our_prob = calculate_temp_probability(forecast_temp, temp, bracket_type)
 
-        # Get PM probability from market prices
-        raw_market = market_data["raw"]
-        pm_prob_yes = float(raw_market.get("outcomePrices", [0.5, 0.5])[0])
+        # Get PM probability from market prices (outcomePrices is a JSON string)
+        market = market_data["market"]
+        try:
+            prices_str = market.get("outcomePrices", "[0.5, 0.5]")
+            prices = json_module.loads(prices_str) if isinstance(prices_str, str) else prices_str
+            pm_prob_yes = float(prices[0])
+        except (json_module.JSONDecodeError, IndexError, TypeError):
+            pm_prob_yes = 0.5
 
         # Calculate edge
         edge_pct = (our_prob - pm_prob_yes) * 100
@@ -310,10 +383,17 @@ def find_weather_edges(min_edge_pct: float = 5.0) -> List[WeatherEdge]:
             confidence = "LOW"
 
         if edge >= min_edge_pct:
+            # Build bracket display string
+            bracket_display = f"{temp}"
+            if bracket_type == "or_higher":
+                bracket_display += " or higher"
+            elif bracket_type == "or_lower":
+                bracket_display += " or below"
+
             market_obj = WeatherMarket(
                 city=city,
                 date=date,
-                temp_bracket=f"{temp}" + (" or higher" if bracket_type == "or_higher" else ""),
+                temp_bracket=bracket_display,
                 temp_unit=unit,
                 pm_price_yes=pm_prob_yes,
                 pm_price_no=1 - pm_prob_yes,
