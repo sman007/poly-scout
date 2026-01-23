@@ -34,11 +34,11 @@ CONDITIONAL_TOKENS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 DATA_API = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
 
-# Smart money thresholds
-MIN_GROWTH_30D = 5.0        # 5x growth minimum
-MAX_WALLET_AGE_DAYS = 90    # Focus on new wallets
-MIN_WIN_RATE = 0.70         # 70% win rate
-MIN_PORTFOLIO_VALUE = 1000  # $1k minimum
+# Smart money thresholds (relaxed to catch emerging smart money)
+MIN_GROWTH_30D = 2.0        # 2x growth minimum (was 5x - too strict)
+MAX_WALLET_AGE_DAYS = 120   # 4 months (was 90)
+MIN_WIN_RATE = 0.60         # 60% win rate (was 70%)
+MIN_PORTFOLIO_VALUE = 500   # $500 minimum (was $1k)
 
 # Scan settings
 # Note: With Alchemy Free (10-block limit), 1000 blocks = 100 API calls
