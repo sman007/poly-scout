@@ -31,10 +31,11 @@ def log(msg: str):
 CITIES = ["seoul", "london", "wellington"]
 
 # Strategy parameters from Hans323's documented approach
-MIN_NO_PRICE = 0.85      # Only sell No when price >= 85%
-MAX_YES_PRICE = 0.15     # Equivalent: Yes <= 15%
+# Hans323: 86% of trades enter at prices >90%
+MIN_NO_PRICE = 0.90      # Only sell No when price >= 90% (Hans323's threshold)
+MAX_YES_PRICE = 0.10     # Equivalent: Yes <= 10%
 MIN_VOLUME = 500         # Minimum volume for liquidity
-POSITION_SIZE_USD = 100  # Conservative paper trade size
+POSITION_SIZE_USD = 1000 # Hans323 uses $1,000-$7,800 per position
 
 
 @dataclass

@@ -1,0 +1,30 @@
+{
+  "balance": 900.0,
+  "positions": [
+    {
+      "id": "london_2026-01-24_7\u00b0C_105723",
+      "opportunity": {
+        "city": "london",
+        "date": "2026-01-24",
+        "bracket": "7\u00b0C",
+        "bracket_type": "exact",
+        "yes_price": 0.0065,
+        "no_price": 0.9935,
+        "volume": 11973.421513,
+        "condition_id": "0xf466abb26604f17af0ff9fe47f7ff4e96fe436386fef2343b1014d2351fbe631",
+        "token_id": "60563881350734978785295541604154967975691100350787351875987401224369331575610",
+        "slug": "highest-temperature-in-london-on-january-24"
+      },
+      "side": "SELL_NO",
+      "shares": 100.65425264217413,
+      "entry_price": 0.9935,
+      "cost": 100,
+      "opened_at": "2026-01-24T10:57:23.827480",
+      "status": "open",
+      "pnl": null,
+      "closed_at": null
+    }
+  ],
+  "closed_trades": [],
+  "updated_at": "2026-01-24T10:57:23.827480"
+}
