@@ -210,7 +210,7 @@ class WeatherSellerPaperTrader:
         self.portfolio_file = self.data_dir / "weather_seller_portfolio.json"
         self.positions: List[PaperPosition] = []
         self.closed_trades: List[PaperPosition] = []
-        self.balance = 1000.0  # Starting paper balance
+        self.balance = 10000.0  # Starting paper balance (Hans323: $10k+ minimum)
         self._load_portfolio()
 
     def _load_portfolio(self):
