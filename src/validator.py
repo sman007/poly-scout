@@ -146,6 +146,10 @@ class EdgeValidator:
         Returns:
             (expected_profit, fees)
         """
+        # Guard against division by zero
+        if entry_price <= 0.001 or entry_price >= 0.999:
+            return 0.0, 0.0
+
         if side == "BUY":
             # Buying underpriced: profit = (fair_value - entry_price) * shares
             shares = order_size_usd / entry_price
