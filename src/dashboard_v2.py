@@ -59,9 +59,9 @@ WALLET_STRATEGIES = {
     # NEW: From X.com strategy research (2026-01-25) - REVERSE ENGINEERED
     "0x4ffe": {"username": "planktonXD", "strategy": "LONGSHOT", "win_rate": "Unknown", "size": "Micro"},
     "0x6a72": {"username": "kch123", "strategy": "MISPRICING", "win_rate": "Very High", "size": "Whale"},
-    "0x7c3d": {"username": "Car", "strategy": "GEOPOLITICAL", "win_rate": "High", "size": "Medium"},
+    "0x7c3d": {"username": "Car", "strategy": "GEOPOLITICAL", "win_rate": "Unknown", "size": "Medium"},
     "0xcc50": {"username": "justdance", "strategy": "LONGSHOT", "win_rate": "Unknown", "size": "Micro"},
-    "0x0a85": {"username": "Fusion1", "strategy": "GEOPOLITICAL", "win_rate": "High", "size": "Large"},
+    "0x0a85": {"username": "Fusion1", "strategy": "GEOPOLITICAL", "win_rate": "Unknown", "size": "Large"},
 }
 
 

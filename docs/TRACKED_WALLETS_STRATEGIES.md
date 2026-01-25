@@ -26,10 +26,9 @@
 | **DIRECTIONAL** | 10 | norrisfan, joosangyoo, jtwyslljy, FollowMeABC123, SemyonMarmeladov, gatorr, BigGumbaBoots, Wannac, ChangoChango, Pimping |
 | **MISPRICING** | 6 | AdolfMissler, 0xe6a3, phonesculptor, lfc123, wagwag, kch123 |
 | **SCALP** | 4 | peter77777, apucimama, BlindOrangutan, 0x19ed |
-| **ARB** | 3 | Automated Bot, Andromeda1, Arb Bot (paonx) |
-| **LONGSHOT** | 2 | DrPufferfish, planktonXD |
-| **POLITICAL** | 1 | CarOnPolymarket |
-| **GEOPOLITICAL** | 1 | Fusion1 |
+| **ARB** | 2 | Automated Bot, Andromeda1 |
+| **LONGSHOT** | 3 | DrPufferfish, planktonXD, justdance |
+| **GEOPOLITICAL** | 2 | Car, Fusion1 |
 | **LIVE** | 1 | Marktakh |
 
 ---
@@ -79,8 +78,8 @@
 | Wallet | Username | Type | Win Rate | Avg Size | Focus | Key Pattern |
 |--------|----------|------|----------|----------|-------|-------------|
 | `0x4ffe...9f71` | planktonXD | **LONGSHOT** | Unknown | $1-10 | Crypto prices | BTC/XRP/token price bets at 3-27% |
-| `0x7c3d...5c6b` | Car | **GEOPOLITICAL** | High | $5-900 | Military/Conflict | US strikes, Iran, Ukraine/Russia |
-| `0x0a85...fe9d` | Fusion1 | **GEOPOLITICAL** | High | $18-3,000 | Ukraine/Russia | Ceasefire bets at 8-15%, Iran strikes |
+| `0x7c3d...5c6b` | Car | **GEOPOLITICAL** | Unknown | $5-900 | Military/Conflict | US strikes, Iran, Ukraine/Russia |
+| `0x0a85...fe9d` | Fusion1 | **GEOPOLITICAL** | Unknown | $18-3,000 | Ukraine/Russia | Ceasefire bets at 8-15%, Iran strikes |
 | `0xcc50...4c82` | justdance | **LONGSHOT** | Unknown | $0.01-11 | Crypto prices | BTC dip/pump predictions at 5-6% |
 | `0x6a72...33ee` | kch123 | **MISPRICING** | VERY HIGH | $2.5K-56K | NHL WHALE | Massive NHL redemptions, multi-game wins |
 
