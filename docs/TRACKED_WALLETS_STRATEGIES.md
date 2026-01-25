@@ -1,6 +1,6 @@
 # Tracked Wallets - Strategy Analysis
 **Generated:** 2026-01-25
-**Total Wallets:** 29 (24 original + 5 from X.com research)
+**Total Wallets:** 30 (25 original + 5 from X.com research)
 
 ---
 
@@ -13,7 +13,6 @@
 | **MISPRICING** | Buying undervalued outcomes vs true odds | Market inefficiency |
 | **SCALP** | Quick in/out on small price movements | Speed/timing |
 | **LONGSHOT** | Low probability, high payout lottery | Asymmetric risk/reward |
-| **POLITICAL** | US election & political markets | Information/timing edge |
 | **GEOPOLITICAL** | Global events, conflicts, treaties | High-conviction events |
 | **COPY** | Following smart money/whale moves | Piggyback on others' edge |
 
@@ -42,7 +41,7 @@
 | `0xdb27...c56e` | DrPufferfish | **LONGSHOT** | N/A | $1-100 | NBA Finals futures | Buys 0.3-1.1% longshots on bad teams |
 | `0xc660...bd28` | ChangoChango | **DIRECTIONAL** | Mixed | $100-600 | UFC, NHL, MMA | Live combat sports trading |
 | `0x161e...6ef0` | peter77777 | **SCALP** | ~95%+ | $50-4,500 | LoL Esports | Buys 95-99.9% favorites, quick exits |
-| `0xe6a3...2f0d` | 0x2E9821aF | **MISPRICING** | 65-70% | $200-5,500 | NBA, NHL, UFC | Buys underdogs 29-34%, hedges |
+| `0xe6a3...2f0d` | 0xe6a3 | **MISPRICING** | 65-70% | $200-5,500 | NBA, NHL, UFC | Buys underdogs 29-34%, hedges |
 | `0xe72b...b0a0` | norrisfan | **DIRECTIONAL** | ~80% | $1,200-4,500 | Spanish Soccer | Madrid derby specialist, "No" on Atletico |
 | `0x3993...cded` | Andromeda1 | **ARB** | N/A | $300-45K | Multi-sport | Large redemptions = prior wins |
 | `0x5aa9...febe` | apucimama | **SCALP** | 60-65% | $20-750 | LoL LCK/LPL | Switches sides mid-match |
@@ -153,7 +152,7 @@
 ### Key Insights for REAL Profit
 
 **1. MISPRICING is the most replicable edge**
-- 5 wallets with strong win rates all use PM vs sharp books comparison
+- 6 wallets with strong win rates all use PM vs sharp books comparison
 - This is EXACTLY what our sportsbook scanner does
 - **ACTION:** When we detect 3%+ edge, EXECUTE don't just alert
 
