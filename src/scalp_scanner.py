@@ -63,22 +63,26 @@ def get_active_markets() -> List[Dict]:
     markets = []
 
     try:
-        # Get active events
-        url = "https://gamma-api.polymarket.com/events?active=true&limit=100"
-        r = requests.get(url, timeout=30)
-        if r.status_code != 200:
-            log(f"API error: {r.status_code}")
-            return []
+        # Get open markets directly
+        offset = 0
+        while len(markets) < 500:
+            url = f"https://gamma-api.polymarket.com/markets?closed=false&limit=100&offset={offset}"
+            r = requests.get(url, timeout=30)
+            if r.status_code != 200:
+                log(f"API error: {r.status_code}")
+                break
 
-        events = r.json()
+            batch = r.json()
+            if not batch:
+                break
 
-        for event in events:
-            for market in event.get("markets", []):
-                if market.get("closed"):
-                    continue
-                markets.append(market)
+            markets.extend(batch)
+            offset += 100
 
-        log(f"Fetched {len(markets)} active markets")
+            if len(batch) < 100:
+                break
+
+        log(f"Fetched {len(markets)} open markets")
 
     except Exception as e:
         log(f"Error fetching markets: {e}")
@@ -86,7 +90,7 @@ def get_active_markets() -> List[Dict]:
     return markets
 
 
-def find_scalp_opportunities(markets: List[Dict], min_price: float = 0.95, max_hours: float = 6.0) -> List[ScalpOpportunity]:
+def find_scalp_opportunities(markets: List[Dict], min_price: float = 0.95, max_hours: float = 24.0) -> List[ScalpOpportunity]:
     """Find markets at 95%+ price resolving within specified hours."""
     opportunities = []
     now = datetime.now(timezone.utc)
