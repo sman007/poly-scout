@@ -5,7 +5,7 @@ Near-Resolution Scalp Strategy Backtest.
 Tests the strategy of buying outcomes priced at 95%+ shortly before resolution.
 The premise: if something is 95%+ likely, it usually wins.
 
-Uses Polymarket's resolved events to calculate actual win rates.
+Uses Polymarket's CLOB price history to get ACTUAL pre-resolution prices.
 
 Usage:
     python -m src.scalp_backtest --days 30
@@ -16,12 +16,59 @@ import requests
 import json
 from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import time
 
 
 def log(msg: str):
     print(f"[SCALP] {msg}", flush=True)
+
+
+def get_price_before_resolution(token_id: str, end_date: str, hours_before: int = 2) -> Optional[float]:
+    """Get the price of a token X hours before resolution using CLOB price history."""
+    try:
+        # Parse end date and calculate start time
+        end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+        start_dt = end_dt - timedelta(hours=hours_before + 1)
+
+        # Query CLOB price history
+        url = (
+            f"https://clob.polymarket.com/prices-history?"
+            f"market={token_id}&"
+            f"startTs={int(start_dt.timestamp())}&"
+            f"endTs={int(end_dt.timestamp())}&"
+            f"fidelity=60"  # 1-minute candles
+        )
+
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+        history = data.get("history", [])
+
+        if not history:
+            return None
+
+        # Get price from ~2 hours before resolution
+        target_time = end_dt - timedelta(hours=hours_before)
+        best_price = None
+        best_diff = float('inf')
+
+        for point in history:
+            t = point.get("t", 0)
+            p = point.get("p", 0)
+            point_dt = datetime.fromtimestamp(t, tz=end_dt.tzinfo)
+            diff = abs((point_dt - target_time).total_seconds())
+
+            if diff < best_diff:
+                best_diff = diff
+                best_price = float(p)
+
+        return best_price
+
+    except Exception as e:
+        return None
 
 
 class ScalpBacktest:
@@ -100,27 +147,59 @@ class ScalpBacktest:
             except:
                 continue
 
-            # Get winning outcome
-            winning_outcome = market.get("winningOutcome")
-
             if not outcome_prices or not outcomes:
                 continue
 
-            # Check each outcome
-            for i, (outcome, price_str) in enumerate(zip(outcomes, outcome_prices)):
+            # Parse resolved prices to determine winner
+            parsed_prices = []
+            for price_str in outcome_prices:
                 try:
-                    price = float(price_str)
+                    parsed_prices.append(float(price_str))
                 except:
+                    parsed_prices.append(0)
+
+            # Determine winning outcome from resolved prices (winner = 1.0)
+            winning_idx = -1
+            for i, p in enumerate(parsed_prices):
+                if p >= 0.99:
+                    winning_idx = i
+                    break
+
+            if winning_idx < 0:
+                continue  # Can't determine winner
+
+            winning_outcome = outcomes[winning_idx] if winning_idx < len(outcomes) else None
+
+            # Get clobTokenIds for price history lookup
+            clob_ids_str = market.get("clobTokenIds", "[]")
+            try:
+                clob_ids = json.loads(clob_ids_str) if isinstance(clob_ids_str, str) else clob_ids_str
+            except:
+                continue
+
+            if not clob_ids or len(clob_ids) != len(outcomes):
+                continue
+
+            # Get end date for price history
+            end_date = market.get("endDate") or event.get("endDate", "")
+            if not end_date:
+                continue
+
+            # For each outcome, get the price 2 hours before resolution
+            for i, (outcome, token_id) in enumerate(zip(outcomes, clob_ids)):
+                pre_res_price = get_price_before_resolution(token_id, end_date, hours_before=2)
+
+                if pre_res_price is None:
                     continue
 
                 # Only interested in high-probability outcomes (95%+)
-                if price >= 0.95:
-                    won = (outcome == winning_outcome)
+                if pre_res_price >= 0.95:
+                    won = (i == winning_idx)
                     opportunities.append({
                         "event_title": event.get("title", "Unknown"),
                         "market_question": market.get("question", "Unknown"),
                         "outcome": outcome,
-                        "price": price,
+                        "price": pre_res_price,
                         "won": won,
                         "winning_outcome": winning_outcome,
                         "market_slug": market.get("slug", "")
