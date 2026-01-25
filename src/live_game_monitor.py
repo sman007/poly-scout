@@ -17,7 +17,18 @@ from typing import Dict, List, Optional
 import sys
 
 # Market IDs to monitor (found via gamma API)
+# NFL Championship Games - Jan 26, 2026
 MONITORED_MARKETS = {
+    "540245": {
+        "name": "Rams NFC Championship",
+        "team": "Rams",
+        "outcome": "Yes"
+    },
+    "540251": {
+        "name": "Seahawks NFC Championship",
+        "team": "Seahawks",
+        "outcome": "Yes"
+    },
     "540256": {
         "name": "Patriots AFC Championship",
         "team": "Patriots",
