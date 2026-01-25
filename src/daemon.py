@@ -20,11 +20,34 @@ import os
 from datetime import datetime
 from pathlib import Path
 from collections import Counter
+from functools import lru_cache
+import time
 
 os.environ['PYTHONUNBUFFERED'] = '1'
 
 import httpx
 from dotenv import load_dotenv
+
+# === CACHING ===
+# Cache for wallet activity data (expires after 5 minutes)
+_activity_cache: dict[str, tuple[float, list]] = {}
+CACHE_TTL_SECONDS = 300  # 5 minutes
+
+def get_cached_activity(address: str) -> list | None:
+    """Get cached activity if not expired."""
+    if address in _activity_cache:
+        timestamp, data = _activity_cache[address]
+        if time.time() - timestamp < CACHE_TTL_SECONDS:
+            return data
+        del _activity_cache[address]
+    return None
+
+def set_cached_activity(address: str, data: list):
+    """Cache activity data."""
+    _activity_cache[address] = (time.time(), data)
+
+# Concurrency limiter for parallel requests
+MAX_CONCURRENT_WALLETS = 10
 
 from src.scanner import WalletScanner, WalletProfile, find_similar_wallets, update_saturation_trend
 from src.sportsbook import SportsbookComparator, SportsbookOpportunity
@@ -1044,8 +1067,13 @@ async def analyze_wallet(
     Only returns if replicability >= MIN_REPLICABILITY_SCORE
     """
     try:
-        url = f"{scanner.BASE_URL}/activity"
-        activity = await scanner._request("GET", url, {"user": address, "limit": 500})
+        # Check cache first
+        activity = get_cached_activity(address)
+        if activity is None:
+            url = f"{scanner.BASE_URL}/activity"
+            activity = await scanner._request("GET", url, {"user": address, "limit": 500})
+            if activity:
+                set_cached_activity(address, activity)
 
         if not activity or len(activity) < 10:
             return None
@@ -1224,22 +1252,30 @@ async def run_leaderboard_scan(saturation_history: dict) -> list[dict]:
 
         log(f"  {len(all_candidates)} candidates")
 
+        sorted_candidates = sorted(all_candidates.values(), key=lambda x: x.profit, reverse=True)[:100]
+
+        # Parallel analysis with semaphore for rate limiting
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_WALLETS)
+
+        async def analyze_with_limit(candidate):
+            async with semaphore:
+                return await analyze_wallet(
+                    scanner,
+                    candidate.address,
+                    candidate.profit,
+                    full_leaderboard,
+                    saturation_history
+                )
+
+        # Run all analyses in parallel
+        log(f"  Analyzing {len(sorted_candidates)} wallets in parallel (max {MAX_CONCURRENT_WALLETS} concurrent)...")
+        all_results = await asyncio.gather(*[analyze_with_limit(c) for c in sorted_candidates], return_exceptions=True)
+
+        # Filter and log results
         results = []
-        checked = 0
-
-        sorted_candidates = sorted(all_candidates.values(), key=lambda x: x.profit, reverse=True)
-
-        for candidate in sorted_candidates[:100]:
-            checked += 1
-
-            result = await analyze_wallet(
-                scanner,
-                candidate.address,
-                candidate.profit,
-                full_leaderboard,
-                saturation_history
-            )
-
+        for candidate, result in zip(sorted_candidates, all_results):
+            if isinstance(result, Exception):
+                continue  # Skip failed analyses
             if result:
                 strat = result["strategy_params"]["likely_strategy"]
                 profit = result["profit_analysis"]
@@ -1253,8 +1289,6 @@ async def run_leaderboard_scan(saturation_history: dict) -> list[dict]:
                     f"{fast}")
                 results.append(result)
 
-            await asyncio.sleep(0.5)
-
         # Sort by priority (highest first = fastest profit potential)
         results.sort(key=lambda x: x["priority_score"], reverse=True)
 
@@ -1262,7 +1296,7 @@ async def run_leaderboard_scan(saturation_history: dict) -> list[dict]:
         fast_count = sum(1 for r in results if r["is_fast_resolution"])
         slow_count = len(results) - fast_count
 
-        log(f"[LEADERBOARD] Checked {checked}, found {len(results)} profitable strategies")
+        log(f"[LEADERBOARD] Checked {len(sorted_candidates)}, found {len(results)} profitable strategies")
         log(f"  -> {fast_count} FAST (15-min), {slow_count} slower")
         return results
 
