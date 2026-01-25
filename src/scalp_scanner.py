@@ -90,11 +90,12 @@ def get_active_markets() -> List[Dict]:
     return markets
 
 
-def find_scalp_opportunities(markets: List[Dict], min_price: float = 0.85, max_hours: float = 72.0) -> List[ScalpOpportunity]:
-    """Find markets at 85%+ price resolving within specified hours.
+def find_scalp_opportunities(markets: List[Dict], min_price: float = 0.65, max_hours: float = 72.0) -> List[ScalpOpportunity]:
+    """Find markets at 65%+ price resolving within specified hours.
 
     Lower threshold captures more data for statistical analysis.
-    We'll track all tiers and analyze which ones are actually profitable.
+    Scalp opportunities appear during live games when outcomes become clear.
+    We track all tiers and analyze which ones are actually profitable.
     """
     opportunities = []
     now = datetime.now(timezone.utc)
@@ -253,12 +254,13 @@ def calculate_stats(opportunities: List[Dict]) -> Dict:
 
     # Stats by price tier
     tiers = {
+        "65-70%": {"min": 0.65, "max": 0.70, "wins": 0, "losses": 0},
+        "70-75%": {"min": 0.70, "max": 0.75, "wins": 0, "losses": 0},
+        "75-80%": {"min": 0.75, "max": 0.80, "wins": 0, "losses": 0},
+        "80-85%": {"min": 0.80, "max": 0.85, "wins": 0, "losses": 0},
         "85-90%": {"min": 0.85, "max": 0.90, "wins": 0, "losses": 0},
-        "90-92%": {"min": 0.90, "max": 0.92, "wins": 0, "losses": 0},
-        "92-94%": {"min": 0.92, "max": 0.94, "wins": 0, "losses": 0},
-        "94-96%": {"min": 0.94, "max": 0.96, "wins": 0, "losses": 0},
-        "96-98%": {"min": 0.96, "max": 0.98, "wins": 0, "losses": 0},
-        "98%+": {"min": 0.98, "max": 1.01, "wins": 0, "losses": 0},
+        "90-95%": {"min": 0.90, "max": 0.95, "wins": 0, "losses": 0},
+        "95%+": {"min": 0.95, "max": 1.01, "wins": 0, "losses": 0},
     }
 
     for opp in resolved:
