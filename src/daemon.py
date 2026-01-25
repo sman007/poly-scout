@@ -56,6 +56,7 @@ from src.validator import EdgeValidator, ValidationResult
 from src.new_market_monitor import NewMarketMonitor, NewMarketOpportunity
 from src.blockchain_scanner import BlockchainScanner
 from src.longshot_scanner import LongshotScanner, LongshotOpportunity, send_longshot_alert
+from src.scalp_scanner import scan_once as scalp_scan_once
 from src.reverse import (
     StrategyReverser,
     StrategyBlueprint,
@@ -76,6 +77,9 @@ SCAN_INTERVAL_BLOCKCHAIN = 900
 
 # Longshot scanner interval (10 minutes)
 SCAN_INTERVAL_LONGSHOT = 600
+
+# Scalp scanner interval (5 minutes) - Forward testing near-resolution strategy
+SCAN_INTERVAL_SCALP = 300
 
 load_dotenv()
 
@@ -1498,6 +1502,7 @@ async def daemon_loop():
     log(f"    - Blockchain: {SCAN_INTERVAL_BLOCKCHAIN // 60} min")
     log(f"    - Longshot: {SCAN_INTERVAL_LONGSHOT // 60} min")
     log(f"    - New Markets: {SCAN_INTERVAL_NEW_MARKETS}s")
+    log(f"    - Scalp: {SCAN_INTERVAL_SCALP // 60} min")
     log("")
     log(f"  Telegram: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}")
     log("=" * 60)
@@ -1516,6 +1521,7 @@ async def daemon_loop():
     last_blockchain_scan = 0
     last_longshot_scan = 0
     last_new_market_scan = 0
+    last_scalp_scan = 0
 
     # Create validator for all sources
     validator = EdgeValidator()
@@ -1623,6 +1629,14 @@ async def daemon_loop():
                     log(f"[NEW MARKETS] Error: {e}")
                 last_new_market_scan = now
 
+            # === SCALP SCAN (Forward testing near-resolution strategy) ===
+            if now - last_scalp_scan >= SCAN_INTERVAL_SCALP:
+                try:
+                    scalp_scan_once()
+                except Exception as e:
+                    log(f"[SCALP] Scan error: {e}")
+                last_scalp_scan = now
+
             # Summary
             if alerts_sent > 0:
                 log(f"[SUMMARY] Sent {alerts_sent} alerts")
@@ -1648,6 +1662,8 @@ async def daemon_loop():
             next_scans.append(("Longshot", SCAN_INTERVAL_LONGSHOT - (datetime.now().timestamp() - last_longshot_scan)))
         if last_new_market_scan > 0:
             next_scans.append(("New Markets", SCAN_INTERVAL_NEW_MARKETS - (datetime.now().timestamp() - last_new_market_scan)))
+        if last_scalp_scan > 0:
+            next_scans.append(("Scalp", SCAN_INTERVAL_SCALP - (datetime.now().timestamp() - last_scalp_scan)))
 
         # Wait until next scan is due
         if next_scans:
