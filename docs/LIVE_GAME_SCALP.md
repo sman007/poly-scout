@@ -1,8 +1,22 @@
 # Live Game Scalp Strategy (Peter 77777 Style)
 
-## Core Insight
+> **WARNING: UNVERIFIED STRATEGY**
+>
+> Peter 77777 (`0x161e...6ef0`) **CANNOT BE VERIFIED** via Polymarket API.
+> - Activity API: 0 trades returned
+> - Positions API: 0 positions
+> - User lookup: 404 Not Found
+>
+> The "95% win rate LoL esports scalper" claim is **UNSUBSTANTIATED**.
+> This document is THEORETICAL. See `VERIFIED_TRADER_ANALYSIS.md` for real data.
+>
+> *Verified: 2026-01-26*
 
-Peter 77777's 95%+ win rate comes from buying **during live games** when outcomes become near-certain, NOT from pre-game betting.
+---
+
+## Core Concept (THEORETICAL)
+
+The theory behind buying **during live games** when outcomes become near-certain:
 
 ## How It Works
 
