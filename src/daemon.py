@@ -55,6 +55,7 @@ from src.twitter_scanner import TwitterScanner
 from src.validator import EdgeValidator, ValidationResult
 from src.new_market_monitor import NewMarketMonitor, NewMarketOpportunity
 from src.blockchain_scanner import BlockchainScanner
+from src.longshot_scanner import LongshotScanner, LongshotOpportunity, send_longshot_alert
 from src.reverse import (
     StrategyReverser,
     StrategyBlueprint,
@@ -72,6 +73,9 @@ from src.config import (
 
 # Blockchain scanner interval (15 minutes)
 SCAN_INTERVAL_BLOCKCHAIN = 900
+
+# Longshot scanner interval (10 minutes)
+SCAN_INTERVAL_LONGSHOT = 600
 
 load_dotenv()
 
@@ -1437,6 +1441,35 @@ async def run_blockchain_scan() -> list:
     return results
 
 
+async def run_longshot_scan() -> list[LongshotOpportunity]:
+    """Scan for planktonXD-style long-shot opportunities."""
+    log(f"[LONGSHOT] Scanning for <5¢ opportunities...")
+
+    results = []
+
+    try:
+        scanner = LongshotScanner()
+
+        # Get near-term opportunities (resolving within 7 days)
+        opps = await scanner.get_top_opportunities(limit=30)
+
+        for opp in opps:
+            cents = opp.price * 100
+            log(f"[LONGSHOT] {cents:.1f}¢ → {opp.potential_return:.0f}x | {opp.outcome} | "
+                f"{opp.days_until_resolution}d | ${opp.liquidity:,.0f} | [{opp.category}]")
+            results.append(opp)
+
+        await scanner.close()
+
+    except Exception as e:
+        log(f"[LONGSHOT] Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    log(f"[LONGSHOT] Found {len(results)} long-shot opportunities")
+    return results
+
+
 async def daemon_loop():
     log("=" * 60)
     log("  POLY-SCOUT v2: AUTONOMOUS PROFIT AGENT")
@@ -1447,6 +1480,7 @@ async def daemon_loop():
     log("    - Sportsbook comparison (PM vs odds)")
     log("    - New market monitoring (mispricing detection)")
     log("    - Blockchain scan (smart money detection)")
+    log("    - Longshot scan (planktonXD strategy - <5c markets)")
     log("")
     log("  Disabled (ENABLE_WALLET_ALERTS=false):")
     log("    - Leaderboard wallets")
@@ -1462,6 +1496,7 @@ async def daemon_loop():
     log(f"    - Sportsbook: {SCAN_INTERVAL_SPORTSBOOK // 60} min")
     log(f"    - Twitter: {SCAN_INTERVAL_TWITTER // 60} min")
     log(f"    - Blockchain: {SCAN_INTERVAL_BLOCKCHAIN // 60} min")
+    log(f"    - Longshot: {SCAN_INTERVAL_LONGSHOT // 60} min")
     log(f"    - New Markets: {SCAN_INTERVAL_NEW_MARKETS}s")
     log("")
     log(f"  Telegram: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}")
@@ -1479,6 +1514,7 @@ async def daemon_loop():
     last_sportsbook_scan = 0
     last_twitter_scan = 0
     last_blockchain_scan = 0
+    last_longshot_scan = 0
     last_new_market_scan = 0
 
     # Create validator for all sources
@@ -1561,6 +1597,23 @@ async def daemon_loop():
 
                 last_blockchain_scan = now
 
+            # === LONGSHOT SCAN (planktonXD strategy) ===
+            if now - last_longshot_scan >= SCAN_INTERVAL_LONGSHOT:
+                try:
+                    longshot_opps = await run_longshot_scan()
+
+                    if longshot_opps:
+                        # Send Telegram alert with top opportunities
+                        await send_longshot_alert(longshot_opps)
+                        alerts_sent += 1
+
+                except Exception as e:
+                    log(f"[LONGSHOT] Scan error: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                last_longshot_scan = now
+
             # === NEW MARKET SCAN ===
             # Scan for new markets (no Telegram alerts - paper trader handles this separately)
             if now - last_new_market_scan >= SCAN_INTERVAL_NEW_MARKETS:
@@ -1591,6 +1644,8 @@ async def daemon_loop():
             next_scans.append(("Twitter", SCAN_INTERVAL_TWITTER - (datetime.now().timestamp() - last_twitter_scan)))
         if last_blockchain_scan > 0:
             next_scans.append(("Blockchain", SCAN_INTERVAL_BLOCKCHAIN - (datetime.now().timestamp() - last_blockchain_scan)))
+        if last_longshot_scan > 0:
+            next_scans.append(("Longshot", SCAN_INTERVAL_LONGSHOT - (datetime.now().timestamp() - last_longshot_scan)))
         if last_new_market_scan > 0:
             next_scans.append(("New Markets", SCAN_INTERVAL_NEW_MARKETS - (datetime.now().timestamp() - last_new_market_scan)))
 
