@@ -1,6 +1,6 @@
 # Tracked Wallets - Strategy Analysis
 **Generated:** 2026-01-25
-**Total Wallets:** 24 (23 newly analyzed + 1 previously documented)
+**Total Wallets:** 29 (24 original + 5 from X.com research)
 
 ---
 
@@ -13,6 +13,8 @@
 | **MISPRICING** | Buying undervalued outcomes vs true odds | Market inefficiency |
 | **SCALP** | Quick in/out on small price movements | Speed/timing |
 | **LONGSHOT** | Low probability, high payout lottery | Asymmetric risk/reward |
+| **POLITICAL** | US election & political markets | Information/timing edge |
+| **GEOPOLITICAL** | Global events, conflicts, treaties | High-conviction events |
 | **COPY** | Following smart money/whale moves | Piggyback on others' edge |
 
 ---
@@ -22,10 +24,12 @@
 | Strategy Type | Count | Wallets |
 |---------------|-------|---------|
 | **DIRECTIONAL** | 10 | norrisfan, joosangyoo, jtwyslljy, FollowMeABC123, SemyonMarmeladov, gatorr, BigGumbaBoots, Wannac, ChangoChango, Pimping |
-| **MISPRICING** | 5 | AdolfMissler, 0xe6a3, phonesculptor, lfc123, wagwag |
+| **MISPRICING** | 6 | AdolfMissler, 0xe6a3, phonesculptor, lfc123, wagwag, kch123 |
 | **SCALP** | 4 | peter77777, apucimama, BlindOrangutan, 0x19ed |
-| **ARB** | 2 | Automated Bot, Andromeda1 |
-| **LONGSHOT** | 1 | DrPufferfish |
+| **ARB** | 3 | Automated Bot, Andromeda1, Arb Bot (paonx) |
+| **LONGSHOT** | 2 | DrPufferfish, planktonXD |
+| **POLITICAL** | 1 | CarOnPolymarket |
+| **GEOPOLITICAL** | 1 | Fusion1 |
 | **LIVE** | 1 | Marktakh |
 
 ---
@@ -70,6 +74,16 @@
 | `0x20d6...3856` | Automated Bot | **ARB** | ~50% | Varies | Multi-market | Heavy merge/redeem automation |
 | `0x37e4...c991` | SemyonMarmeladov | **DIRECTIONAL** | Unknown | $15K-150K | Serie A, La Liga | MASSIVE underdog positions |
 
+### FROM X.COM RESEARCH (2026-01-25) - REVERSE ENGINEERED
+
+| Wallet | Username | Type | Win Rate | Avg Size | Focus | Key Pattern |
+|--------|----------|------|----------|----------|-------|-------------|
+| `0x4ffe...9f71` | planktonXD | **LONGSHOT** | Unknown | $1-10 | Crypto prices | BTC/XRP/token price bets at 3-27% |
+| `0x7c3d...5c6b` | Car | **GEOPOLITICAL** | High | $5-900 | Military/Conflict | US strikes, Iran, Ukraine/Russia |
+| `0x0a85...fe9d` | Fusion1 | **GEOPOLITICAL** | High | $18-3,000 | Ukraine/Russia | Ceasefire bets at 8-15%, Iran strikes |
+| `0xcc50...4c82` | justdance | **LONGSHOT** | Unknown | $0.01-11 | Crypto prices | BTC dip/pump predictions at 5-6% |
+| `0x6a72...33ee` | kch123 | **MISPRICING** | VERY HIGH | $2.5K-56K | NHL WHALE | Massive NHL redemptions, multi-game wins |
+
 ### PREVIOUSLY DOCUMENTED
 
 | Wallet | Username | Type | Win Rate | Avg Size | Focus |
@@ -105,6 +119,11 @@
 - $5-10K positions, quick exits
 - **Edge:** Finds mispriced NBA lines vs sharp books
 
+### 6. **kch123** - NHL Whale [MISPRICING] - NEW!
+- $56K single game redemptions on NHL
+- Multiple $10K+ redemptions in same transaction
+- **Edge:** NHL moneyline/spread mispricing, VERY high win rate
+
 ---
 
 ## Timing Patterns
@@ -126,7 +145,7 @@
 | **Small** | $50-500 | FollowMeABC123, apucimama |
 | **Medium** | $500-5K | Most wallets |
 | **Large** | $5K-30K | gatorr, phonesculptor, wagwag |
-| **Whale** | $30K-440K | lfc123, SemyonMarmeladov, Pimping |
+| **Whale** | $30K-440K | lfc123, SemyonMarmeladov, Pimping, kch123 |
 
 ---
 

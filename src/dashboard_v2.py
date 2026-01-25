@@ -56,6 +56,12 @@ WALLET_STRATEGIES = {
     "0x20d6": {"username": "Automated Bot", "strategy": "ARB", "win_rate": "50%", "size": "Medium"},
     "0x37e4": {"username": "SemyonMarmeladov", "strategy": "DIRECTIONAL", "win_rate": "Unknown", "size": "Whale"},
     "0xb45a": {"username": "DiviLungaoBBW", "strategy": "DIRECTIONAL", "win_rate": "High", "size": "Medium"},
+    # NEW: From X.com strategy research (2026-01-25) - REVERSE ENGINEERED
+    "0x4ffe": {"username": "planktonXD", "strategy": "LONGSHOT", "win_rate": "Unknown", "size": "Micro"},
+    "0x6a72": {"username": "kch123", "strategy": "MISPRICING", "win_rate": "Very High", "size": "Whale"},
+    "0x7c3d": {"username": "Car", "strategy": "GEOPOLITICAL", "win_rate": "High", "size": "Medium"},
+    "0xcc50": {"username": "justdance", "strategy": "LONGSHOT", "win_rate": "Unknown", "size": "Micro"},
+    "0x0a85": {"username": "Fusion1", "strategy": "GEOPOLITICAL", "win_rate": "High", "size": "Large"},
 }
 
 
@@ -176,7 +182,7 @@ def get_wallets_data() -> dict:
         })
 
     # Sort by strategy type
-    strategy_order = {"MISPRICING": 0, "ARB": 1, "DIRECTIONAL": 2, "SCALP": 3, "LONGSHOT": 4, "LIVE": 5, "UNKNOWN": 6}
+    strategy_order = {"MISPRICING": 0, "ARB": 1, "POLITICAL": 2, "GEOPOLITICAL": 3, "DIRECTIONAL": 4, "SCALP": 5, "LONGSHOT": 6, "LIVE": 7, "UNKNOWN": 8}
     wallets.sort(key=lambda w: strategy_order.get(w["strategy"], 99))
 
     return {
@@ -281,6 +287,8 @@ DASHBOARD_HTML = """
         .badge-scalp { background: #f0883e; color: #fff; }
         .badge-longshot { background: #da3633; color: #fff; }
         .badge-live { background: #db61a2; color: #fff; }
+        .badge-political { background: #1158c7; color: #fff; }
+        .badge-geopolitical { background: #6e40c9; color: #fff; }
         .badge-unknown { background: #6e7681; color: #fff; }
         .badge-buy { background: #238636; color: #fff; }
         .badge-sell { background: #da3633; color: #fff; }
@@ -468,6 +476,8 @@ DASHBOARD_HTML = """
                 'SCALP': 'badge-scalp',
                 'LONGSHOT': 'badge-longshot',
                 'LIVE': 'badge-live',
+                'POLITICAL': 'badge-political',
+                'GEOPOLITICAL': 'badge-geopolitical',
             };
             return map[strategy] || 'badge-unknown';
         }
