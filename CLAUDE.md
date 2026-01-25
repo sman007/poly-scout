@@ -46,3 +46,11 @@ ssh -o StrictHostKeyChecking=no -i ~/.ssh/vultr_polymarket root@95.179.138.245 "
 
 ### Goal
 Generate REAL profit from Polymarket arbitrage and edge opportunities. Paper trading is for validation only - the end goal is real money execution.
+
+### Capital Efficiency
+All scanners enforce a **72-hour max resolution time** to avoid tying up capital:
+- Longshot scanner: `MAX_DAYS = 3`
+- Scalp scanner: `max_hours = 72`
+- Sports: Same-day games by nature
+
+This ensures rapid compounding instead of capital locked in long-dated positions.

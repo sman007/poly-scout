@@ -46,7 +46,7 @@ class LongshotScanner:
     MIN_PRICE = 0.001  # 0.1 cents (avoid dead markets)
     MAX_PRICE = 0.05   # 5 cents
     MIN_LIQUIDITY = 500  # $500 minimum
-    MAX_DAYS = 14  # Only markets resolving within 2 weeks
+    MAX_DAYS = 3  # 72h max for capital efficiency
 
     # Category keywords
     CRYPTO_KEYWORDS = ['bitcoin', 'btc', 'ethereum', 'eth', 'solana', 'sol', 'xrp', 'doge', 'crypto', 'price']
