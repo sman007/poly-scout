@@ -70,12 +70,31 @@ class NewMarketMonitor:
             log(f"Error saving seen markets: {e}")
 
     async def fetch_active_markets(self) -> list:
-        """Fetch all active markets from Gamma API."""
-        url = f"{GAMMA_API_BASE}/events?active=true&closed=false&limit=500"
-        resp = await self.client.get(url)
-        if resp.status_code == 200:
-            return resp.json()
-        return []
+        """Fetch all active markets from Gamma API with pagination."""
+        all_events = []
+        offset = 0
+        limit = 500
+
+        while True:
+            url = f"{GAMMA_API_BASE}/events?active=true&closed=false&limit={limit}&offset={offset}"
+            resp = await self.client.get(url)
+            if resp.status_code != 200:
+                break
+
+            events = resp.json()
+            if not events:
+                break
+
+            all_events.extend(events)
+            log(f"Fetched {len(all_events)} events...")
+
+            if len(events) < limit:
+                break  # No more pages
+
+            offset += limit
+
+        log(f"Total: {len(all_events)} active events")
+        return all_events
 
     def analyze_mispricing(self, event: dict) -> Optional[NewMarketOpportunity]:
         """
