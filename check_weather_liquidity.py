@@ -1,32 +1,43 @@
 #!/usr/bin/env python3
 """Check weather market liquidity."""
-import httpx
+import requests
 import json
 
-url = 'https://gamma-api.polymarket.com/markets'
-params = {'active': 'true', 'closed': 'false', 'limit': 500}
-
-resp = httpx.get(url, params=params, timeout=30)
-markets = resp.json()
+cities = ["seoul", "london", "wellington"]
+days = [(25, "january"), (26, "january"), (27, "january")]
 
 print("=== WEATHER MARKET LIQUIDITY ===\n")
 
-for m in markets:
-    q = m.get('question', '').lower()
-    # Match weather markets
-    if any(city in q for city in ['seoul', 'london', 'wellington']) and \
-       any(date in q for date in ['january 25', 'january 26', 'january 27']):
+for city in cities:
+    for day, month in days:
+        slug = f"highest-temperature-in-{city}-on-{month}-{day}"
+        url = f"https://gamma-api.polymarket.com/events/slug/{slug}"
 
-        question = m.get('question', '')[:65]
-        liq = float(m.get('liquidity', 0))
-        vol = float(m.get('volume', 0))
-        prices_str = m.get('outcomePrices', '[]')
-        prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
+        try:
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                continue
 
-        print(f"{question}")
-        print(f"  Liquidity: ${liq:,.0f} | Volume: ${vol:,.0f}")
-        if prices:
-            yes_price = float(prices[0]) if len(prices) > 0 else 0
-            no_price = float(prices[1]) if len(prices) > 1 else 0
-            print(f"  Yes: {yes_price:.1%} | No: {no_price:.1%}")
-        print()
+            event = resp.json()
+            markets = event.get("markets", [])
+
+            print(f"\n{city.upper()} {month.title()} {day}")
+            print("-" * 50)
+
+            for m in markets:
+                bracket = m.get("groupItemTitle", "")
+                liq = float(m.get("liquidityNum", 0) or 0)
+                vol = float(m.get("volume", 0) or 0)
+                prices_str = m.get("outcomePrices", "[]")
+                prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
+
+                if prices:
+                    yes_p = float(prices[0]) * 100 if len(prices) > 0 else 0
+                    no_p = float(prices[1]) * 100 if len(prices) > 1 else 0
+                else:
+                    yes_p, no_p = 0, 0
+
+                print(f"  {bracket:20} | Yes: {yes_p:5.1f}% | Liq: ${liq:>8,.0f} | Vol: ${vol:>10,.0f}")
+
+        except Exception as e:
+            print(f"Error for {slug}: {e}")
