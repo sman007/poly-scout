@@ -32,6 +32,14 @@ from src.twitter_scanner import TwitterScanner
 from src.validator import EdgeValidator, ValidationResult
 from src.new_market_monitor import NewMarketMonitor, NewMarketOpportunity
 from src.blockchain_scanner import BlockchainScanner
+from src.reverse import (
+    StrategyReverser,
+    StrategyBlueprint,
+    Trade as ReverseTrade,
+    WalletProfile as ReverseWalletProfile,
+    WalletAnalysis as ReverseWalletAnalysis,
+)
+from datetime import timedelta
 from src.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, POLYGON_RPC_URL,
     MIN_EDGE_PCT, MIN_LIQUIDITY_USD, MIN_EXPECTED_PROFIT,
@@ -47,6 +55,80 @@ load_dotenv()
 
 def log(msg: str):
     print(msg, flush=True)
+
+
+def convert_to_reverse_types(
+    address: str,
+    activity: list,
+    leaderboard_profit: float,
+    account_age_days: float
+) -> tuple:
+    """
+    Convert raw API activity data to types expected by StrategyReverser.
+
+    Returns: (trades, wallet_profile, wallet_analysis)
+    """
+    trades = []
+    for a in activity:
+        try:
+            ts = a.get("timestamp")
+            if isinstance(ts, (int, float)):
+                ts = datetime.fromtimestamp(ts)
+            elif isinstance(ts, str):
+                ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            else:
+                ts = datetime.now()
+
+            trade = ReverseTrade(
+                timestamp=ts,
+                market_id=a.get("slug", a.get("market_id", "unknown")),
+                market_title=a.get("title", "Unknown"),
+                outcome=a.get("outcome", "unknown"),
+                side=a.get("side", "buy").upper(),
+                shares=float(a.get("size", 0) or 0),
+                price=float(a.get("price", 0) or 0),
+                value=float(a.get("usdcSize", 0) or 0),
+                market_type="binary",
+            )
+            trades.append(trade)
+        except Exception:
+            continue
+
+    wallet_profile = ReverseWalletProfile(
+        address=address,
+        total_trades=len(trades),
+        active_days=int(account_age_days),
+        creation_date=datetime.now() - timedelta(days=account_age_days),
+        total_pnl=leaderboard_profit,
+        current_balance=0.0,  # Not available from leaderboard
+    )
+
+    # Calculate basic analysis metrics
+    sizes = [t.value for t in trades if t.value > 0]
+    avg_trade_size = sum(sizes) / len(sizes) if sizes else 0
+
+    # Get unique market categories
+    markets = list(set(t.market_title for t in trades))[:10]
+
+    # Calculate win rate from trades (simplified)
+    buy_count = sum(1 for t in trades if t.side == "BUY")
+    win_rate = 0.0
+    if leaderboard_profit > 0 and len(trades) > 0:
+        # Rough estimate: if profitable, assume some win rate
+        win_rate = 0.6 + min(0.35, leaderboard_profit / 100000)
+
+    wallet_analysis = ReverseWalletAnalysis(
+        wallet=wallet_profile,
+        primary_markets=markets,
+        avg_trade_size=avg_trade_size,
+        avg_holding_period=timedelta(hours=1),  # Default estimate
+        win_rate=win_rate,
+        peak_exposure=0.5,  # Default estimate
+        trading_hours=list(range(24)),  # Active all hours
+        patterns={},
+    )
+
+    return trades, wallet_profile, wallet_analysis
 
 
 # Configuration
@@ -886,13 +968,31 @@ def format_alert(wallet: dict) -> str:
     trend = saturation.get('trend', 'unknown')
     account_age = wallet.get('account_age_days', 0)
 
+    # Extract rules from blueprint if available
+    blueprint = wallet.get("blueprint")
+    rules_section = ""
+    if blueprint:
+        entry_rules = []
+        for r in blueprint.entry_rules[:3]:  # Top 3 entry rules
+            entry_rules.append(f"  - {r.condition}: {r.value} ({r.confidence:.0%})")
+        exit_rules = []
+        for r in blueprint.exit_rules[:2]:  # Top 2 exit rules
+            exit_rules.append(f"  - {r.condition}: {r.value} ({r.confidence:.0%})")
+
+        if entry_rules or exit_rules:
+            rules_section = "\n\nRULES EXTRACTED:"
+            if entry_rules:
+                rules_section += "\nEntry:\n" + "\n".join(entry_rules)
+            if exit_rules:
+                rules_section += "\nExit:\n" + "\n".join(exit_rules)
+
     msg = f"""{source_tag}: {strategy_name}
 
 {profit_str} profit | {account_age}d old | {speed} res
 ${strat.get('avg_trade_size', 0):.0f}/trade | {pattern}
 
 Est: {monthly_str}/mo @ {capital_str} ({profit.get('monthly_roi_pct', 0):.0f}% ROI)
-Competition: {wallet_count} wallets ({trend})
+Competition: {wallet_count} wallets ({trend}){rules_section}
 
 polymarket.com/profile/{address[:8]}...{address[-4:]}"""
 
@@ -1040,7 +1140,28 @@ async def analyze_wallet(
             log(f"  Skip {address[:12]}... (replicability {replicability_score}/10 < {MIN_REPLICABILITY_SCORE})")
             return None
 
-        # === 6. PRIORITY SCORE (for sorting by fast profit potential) ===
+        # === 6. REVERSE ENGINEERING - Extract actual trading rules ===
+        try:
+            trades, wallet_profile, wallet_analysis = convert_to_reverse_types(
+                address, activity, leaderboard_profit, account_age_days
+            )
+            reverser = StrategyReverser(min_confidence=0.6, min_evidence=5)
+            blueprint = reverser.reverse_engineer(wallet_profile, trades, wallet_analysis)
+
+            # Validate blueprint has quality rules
+            entry_confidence = max([r.confidence for r in blueprint.entry_rules], default=0)
+            total_rules = len(blueprint.entry_rules) + len(blueprint.exit_rules)
+
+            if entry_confidence < 0.5 or total_rules < 2:
+                log(f"  Skip {address[:12]}... (weak rules: {total_rules} rules, {entry_confidence:.0%} confidence)")
+                return None
+
+            log(f"  Reverse engineered: {len(blueprint.entry_rules)} entry, {len(blueprint.exit_rules)} exit rules")
+        except Exception as e:
+            log(f"  Skip {address[:12]}... (reverse engineering failed: {e})")
+            return None
+
+        # === 7. PRIORITY SCORE (for sorting by fast profit potential) ===
         priority_score = calculate_priority_score(strategy_params, profit_analysis)
 
         # Get resolution info for display
@@ -1062,6 +1183,9 @@ async def analyze_wallet(
             "saturation": saturation,
             "profit_analysis": profit_analysis,
             "replicability_score": replicability_score,
+
+            # Reverse engineered blueprint
+            "blueprint": blueprint,
 
             # Priority for sorting (fast profit first)
             "priority_score": priority_score,

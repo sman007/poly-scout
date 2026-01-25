@@ -1,0 +1,22 @@
+{
+  "SPORTS": {
+    "2026-01-24": {
+      "wallets": 2,
+      "capital": 305823.0
+    },
+    "2026-01-25": {
+      "wallets": 0,
+      "capital": 0.0
+    }
+  },
+  "UNKNOWN": {
+    "2026-01-24": {
+      "wallets": 0,
+      "capital": 0
+    },
+    "2026-01-25": {
+      "wallets": 0,
+      "capital": 0
+    }
+  }
+}
