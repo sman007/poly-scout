@@ -7,14 +7,17 @@ import json
 
 def test_clob_api():
     print("Testing CLOB Price History API...")
-    print("Looking for markets that resolved in the last 48 hours...")
+    print("Looking for RESOLVED markets (winner determined)...")
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    now = datetime.now(timezone.utc)
+    cutoff_old = now - timedelta(days=7)  # Not older than 7 days
+    cutoff_new = now - timedelta(hours=4)  # At least 4 hours old (to be resolved)
 
-    # Paginate through events to find recent ones
+    # Paginate through events to find resolved ones
     offset = 0
     tested = 0
     while tested < 5:
+        # Use different query - look for events with resolved outcomes
         events_url = f'https://gamma-api.polymarket.com/events?closed=true&limit=100&offset={offset}'
         resp = requests.get(events_url, timeout=30)
         events = resp.json()
@@ -28,6 +31,22 @@ def test_clob_api():
             for market in markets:
                 if not market.get('closed'):
                     continue
+
+                # Check if outcome is resolved (price is 0 or 1)
+                outcome_prices_str = market.get('outcomePrices', '[]')
+                try:
+                    outcome_prices = json.loads(outcome_prices_str) if isinstance(outcome_prices_str, str) else outcome_prices_str
+                except:
+                    continue
+
+                if not outcome_prices:
+                    continue
+
+                # Check if truly resolved (one outcome at 1.0, others at 0.0)
+                parsed = [float(p) for p in outcome_prices]
+                if not any(p >= 0.99 for p in parsed):
+                    continue  # Not resolved yet
+
                 end_date = market.get('endDate') or event.get('endDate', '')
                 if not end_date:
                     continue
@@ -38,8 +57,8 @@ def test_clob_api():
                 except:
                     continue
 
-                # Skip if too old
-                if end_dt < cutoff:
+                # Skip if too old or too new
+                if end_dt < cutoff_old or end_dt > cutoff_new:
                     continue
 
                 clob_ids_str = market.get('clobTokenIds', '[]')
@@ -53,10 +72,11 @@ def test_clob_api():
                 print(f'\n=== Market {tested + 1} ===')
                 print(f'Question: {question}')
                 print(f'End Date: {end_date}')
+                print(f'Resolved Prices: {parsed}')
                 print(f'Token ID: {token_id[:20]}...')
 
-                # Try to get price history
-                start_dt = end_dt - timedelta(hours=48)
+                # Try to get price history from 24 hours before end
+                start_dt = end_dt - timedelta(hours=24)
 
                 url = f'https://clob.polymarket.com/prices-history?market={token_id}&startTs={int(start_dt.timestamp())}&endTs={int(end_dt.timestamp())}&fidelity=60'
 
@@ -97,8 +117,11 @@ def test_clob_api():
                     break
 
         offset += 100
+        if offset > 500:
+            print("Paginated through 500 events without finding recent resolved markets")
+            break
 
-    print(f'\n\nTested {tested} recent markets')
+    print(f'\n\nTested {tested} recent resolved markets')
 
 if __name__ == '__main__':
     test_clob_api()
