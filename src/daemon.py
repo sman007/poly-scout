@@ -1481,6 +1481,37 @@ async def run_longshot_scan() -> list[LongshotOpportunity]:
                 f"{opp.days_until_resolution}d | ${opp.liquidity:,.0f} | [{opp.category}]")
             results.append(opp)
 
+            # Paper trade top longshots with 10% allocation ($20 per bet from $200 longshot budget)
+            if len(results) <= 5 and opp.price <= 0.01:  # Top 5 at <1¢
+                try:
+                    portfolio = load_portfolio()
+                    # Add longshot position manually (different from Kelly sizing)
+                    bet_size = 20.0  # Fixed $20 per longshot
+                    if portfolio["cash"] >= bet_size:
+                        shares = bet_size / opp.price
+                        position = {
+                            "market_slug": opp.question[:50],  # Use question as slug
+                            "outcome": opp.outcome,
+                            "entry_price": opp.price,
+                            "shares": shares,
+                            "cost_basis": bet_size,
+                            "entry_time": datetime.now().isoformat(),
+                            "edge_pct": opp.potential_return * 100,  # Store potential return
+                            "kelly_fraction": 0.10,  # 10% allocation
+                            "category": "longshot",
+                            "fair_value": 0.0,  # Unknown
+                            "potential_payout": shares,  # $1 per share if wins
+                            "status": "open",
+                            "resolution_value": None,
+                            "pnl": None
+                        }
+                        portfolio["positions"].append(position)
+                        portfolio["cash"] -= bet_size
+                        save_portfolio(portfolio)
+                        log(f"[PAPER] LONGSHOT: ${bet_size} on {opp.outcome} @ {cents:.1f}¢ ({opp.potential_return:.0f}x potential)")
+                except Exception as e:
+                    log(f"[PAPER] Longshot error: {e}")
+
         await scanner.close()
 
     except Exception as e:
