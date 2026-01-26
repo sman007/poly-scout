@@ -306,13 +306,80 @@ class RealTimeMarketMonitor:
 
     def _handle_ws_message(self, data: dict):
         """Handle incoming WebSocket message."""
-        # Update local order book cache
-        if "market" in data:
-            token_id = data.get("asset_id", "")
-            if token_id:
-                with self._lock:
-                    # Parse and cache order book update
-                    pass  # Will implement based on actual message format
+        # Handle two message types:
+        # 1. Full order book snapshot (has 'bids' and 'asks' arrays)
+        # 2. Price changes (has 'price_changes' array with best_bid/best_ask)
+
+        if isinstance(data, list):
+            # Initial snapshot is an array of order books
+            for item in data:
+                self._process_order_book_snapshot(item)
+        elif "price_changes" in data:
+            # Price update message
+            for change in data.get("price_changes", []):
+                self._process_price_change(change)
+        elif "bids" in data or "asks" in data:
+            # Single order book snapshot
+            self._process_order_book_snapshot(data)
+
+    def _process_order_book_snapshot(self, data: dict):
+        """Process a full order book snapshot."""
+        token_id = data.get("asset_id", "")
+        if not token_id:
+            return
+
+        bids = [
+            OrderBookLevel(price=float(b["price"]), size=float(b["size"]))
+            for b in data.get("bids", [])
+        ]
+        asks = [
+            OrderBookLevel(price=float(a["price"]), size=float(a["size"]))
+            for a in data.get("asks", [])
+        ]
+
+        with self._lock:
+            self.order_books[token_id] = OrderBook(
+                token_id=token_id,
+                bids=bids,
+                asks=asks,
+                timestamp=datetime.now()
+            )
+
+        # Fire callbacks
+        for cb in self.price_callbacks:
+            try:
+                best_bid = bids[0].price if bids else 0
+                best_ask = asks[0].price if asks else 0
+                cb(token_id, best_bid, best_ask)
+            except Exception:
+                pass
+
+    def _process_price_change(self, change: dict):
+        """Process a price change update."""
+        token_id = change.get("asset_id", "")
+        if not token_id:
+            return
+
+        best_bid = float(change.get("best_bid", 0))
+        best_ask = float(change.get("best_ask", 0))
+
+        # Update cached order book with best prices
+        with self._lock:
+            if token_id in self.order_books:
+                book = self.order_books[token_id]
+                # Update best bid/ask
+                if best_bid > 0 and book.bids:
+                    book.bids[0] = OrderBookLevel(price=best_bid, size=book.bids[0].size)
+                if best_ask > 0 and book.asks:
+                    book.asks[0] = OrderBookLevel(price=best_ask, size=book.asks[0].size)
+                book.timestamp = datetime.now()
+
+        # Fire callbacks
+        for cb in self.price_callbacks:
+            try:
+                cb(token_id, best_bid, best_ask)
+            except Exception:
+                pass
 
     def start(self):
         """Start real-time monitoring."""

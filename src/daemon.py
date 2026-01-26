@@ -51,6 +51,7 @@ MAX_CONCURRENT_WALLETS = 10
 
 from src.scanner import WalletScanner, WalletProfile, find_similar_wallets, update_saturation_trend
 from src.sportsbook import SportsbookComparator, SportsbookOpportunity
+from src.polymarket_client import RealTimeMarketMonitor
 from src.twitter_scanner import TwitterScanner
 from src.validator import EdgeValidator, ValidationResult
 from src.new_market_monitor import NewMarketMonitor, NewMarketOpportunity
@@ -1652,6 +1653,21 @@ async def daemon_loop():
     log("")
     log(f"  Telegram: {'YES' if TELEGRAM_BOT_TOKEN else 'NO'}")
     log("=" * 60)
+
+    # Initialize WebSocket for real-time price updates
+    ws_monitor = RealTimeMarketMonitor()
+    ws_price_updates = {"count": 0, "last_token": None}
+
+    def on_ws_price_update(token_id, bid, ask):
+        ws_price_updates["count"] += 1
+        ws_price_updates["last_token"] = token_id[:16]
+        # Log every 100th update to avoid spam
+        if ws_price_updates["count"] % 100 == 0:
+            log(f"[WS] {ws_price_updates['count']} price updates received")
+
+    ws_monitor.add_price_callback(on_ws_price_update)
+    ws_monitor.start()
+    log("[WS] WebSocket real-time price feed started")
 
     seen_wallets = load_seen_wallets()
     seen_opportunities = load_seen_opportunities()
