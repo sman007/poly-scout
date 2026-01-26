@@ -57,6 +57,7 @@ from src.new_market_monitor import NewMarketMonitor, NewMarketOpportunity
 from src.blockchain_scanner import BlockchainScanner
 from src.longshot_scanner import LongshotScanner, LongshotOpportunity, send_longshot_alert
 from src.scalp_scanner import scan_once as scalp_scan_once
+from src.paper_kelly import load_portfolio, save_portfolio, paper_trade_sports_edge, print_portfolio_summary
 from src.reverse import (
     StrategyReverser,
     StrategyBlueprint,
@@ -1335,6 +1336,20 @@ async def run_sportsbook_scan(validator: EdgeValidator) -> list[tuple[Sportsbook
                     log(f"[SPORTSBOOK] VALID: {opp.outcome} {opp.action} @ {opp.pm_price:.1%} "
                         f"(edge={validation.edge_pct:+.1f}%, profit=${validation.expected_profit:.2f})")
                     validated_opps.append((opp, validation))
+
+                    # Paper trade the opportunity
+                    try:
+                        portfolio = load_portfolio()
+                        paper_trade_sports_edge(
+                            portfolio=portfolio,
+                            market_slug=opp.market_slug,
+                            team=opp.outcome,
+                            pm_price=opp.pm_price,
+                            vegas_prob=opp.sb_price
+                        )
+                        save_portfolio(portfolio)
+                    except Exception as pt_error:
+                        log(f"[PAPER] Error: {pt_error}")
 
     except Exception as e:
         log(f"[SPORTSBOOK] Error: {e}")
