@@ -1481,13 +1481,30 @@ async def run_longshot_scan() -> list[LongshotOpportunity]:
                 f"{opp.days_until_resolution}d | ${opp.liquidity:,.0f} | [{opp.category}]")
             results.append(opp)
 
-            # Paper trade top longshots with 10% allocation ($20 per bet from $200 longshot budget)
+            # Paper trade top longshots with 10% portfolio limit
             if len(results) <= 5 and opp.price <= 0.01:  # Top 5 at <1¢
                 try:
                     portfolio = load_portfolio()
-                    # Add longshot position manually (different from Kelly sizing)
+
+                    # Calculate current longshot exposure (10% portfolio limit = $1,000)
+                    LONGSHOT_LIMIT = 1000.0  # 10% of $10,000 initial
+                    longshot_exposure = sum(
+                        p.get("cost_basis", 0) for p in portfolio.positions
+                        if p.get("category") == "longshot" and p.get("status") == "open"
+                    )
+
                     bet_size = 20.0  # Fixed $20 per longshot
-                    if portfolio.cash >= bet_size:
+
+                    # Check if we're at the limit
+                    if longshot_exposure >= LONGSHOT_LIMIT:
+                        log(f"[PAPER] SKIP LONGSHOT: At limit (${longshot_exposure:.0f}/${LONGSHOT_LIMIT:.0f})")
+                        continue
+
+                    # Cap bet to stay within limit
+                    remaining_budget = LONGSHOT_LIMIT - longshot_exposure
+                    bet_size = min(bet_size, remaining_budget)
+
+                    if portfolio.cash >= bet_size and bet_size >= 5:
                         shares = bet_size / opp.price
                         position = {
                             "market_slug": opp.question[:50],  # Use question as slug
