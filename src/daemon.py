@@ -56,6 +56,7 @@ from src.validator import EdgeValidator, ValidationResult
 from src.new_market_monitor import NewMarketMonitor, NewMarketOpportunity
 from src.blockchain_scanner import BlockchainScanner
 from src.longshot_scanner import LongshotScanner, LongshotOpportunity, send_longshot_alert
+from src.weather_bucket_scanner import WeatherBucketScanner, BucketArbitrageOpportunity
 from src.scalp_scanner import scan_once as scalp_scan_once
 from src.paper_kelly import load_portfolio, save_portfolio, paper_trade_sports_edge, print_portfolio_summary
 from src.reverse import (
@@ -81,6 +82,9 @@ SCAN_INTERVAL_LONGSHOT = 600
 
 # Scalp scanner interval (5 minutes) - Forward testing near-resolution strategy
 SCAN_INTERVAL_SCALP = 300
+
+# Weather bucket scanner interval (10 minutes) - 0xf2e346ab bucket arbitrage
+SCAN_INTERVAL_WEATHER_BUCKET = 600
 
 load_dotenv()
 
@@ -1540,6 +1544,75 @@ async def run_longshot_scan() -> list[LongshotOpportunity]:
     return results
 
 
+async def run_weather_bucket_scan() -> list[BucketArbitrageOpportunity]:
+    """Scan for 0xf2e346ab-style weather bucket arbitrage opportunities."""
+    log(f"[WEATHER-BUCKET] Scanning for bucket arbitrage...")
+
+    results = []
+
+    try:
+        scanner = WeatherBucketScanner()
+        opps = await scanner.scan()
+
+        for opp in opps:
+            # Calculate actual ROI (edge / cost)
+            if opp.arb_type == "SUM_UNDER":
+                actual_roi = opp.edge / opp.total_cost if opp.total_cost > 0 else 0
+            else:  # SUM_OVER - buying all NOs
+                n = len(opp.brackets_to_buy)
+                payout = (n - 1)  # All but one NO wins
+                actual_roi = (payout - opp.total_cost) / opp.total_cost if opp.total_cost > 0 else 0
+
+            log(f"[WEATHER-BUCKET] {opp.event.city}: {opp.arb_type} | "
+                f"Edge={opp.edge*100:.1f}% | Cost=${opp.total_cost:.2f} | "
+                f"ROI={actual_roi*100:.1f}% | Brackets={len(opp.brackets_to_buy)}")
+            results.append(opp)
+
+            # Paper trade weather bucket opportunities
+            if actual_roi >= 0.01:  # Min 1% ROI
+                try:
+                    portfolio = load_portfolio()
+
+                    # Calculate bet size ($20 per bracket)
+                    bet_per_bracket = 20.0
+                    total_bet = bet_per_bracket * len(opp.brackets_to_buy)
+
+                    if portfolio.cash >= total_bet:
+                        position = {
+                            "market_slug": f"weather_{opp.event.city}_{opp.event.date}",
+                            "outcome": opp.arb_type,
+                            "entry_price": opp.total_cost / len(opp.brackets_to_buy),
+                            "shares": len(opp.brackets_to_buy),
+                            "cost_basis": total_bet,
+                            "entry_time": datetime.now().isoformat(),
+                            "edge_pct": actual_roi * 100,
+                            "kelly_fraction": 0.05,
+                            "category": "weather_bucket",
+                            "fair_value": 1.0 / len(opp.brackets_to_buy),
+                            "potential_payout": total_bet * (1 + actual_roi),
+                            "status": "open",
+                            "resolution_value": None,
+                            "pnl": None
+                        }
+                        portfolio.positions.append(position)
+                        portfolio.cash -= total_bet
+                        save_portfolio(portfolio)
+                        log(f"[PAPER] WEATHER BUCKET: ${total_bet:.0f} on {opp.arb_type} @ {opp.event.city} "
+                            f"({actual_roi*100:.1f}% ROI)")
+                except Exception as e:
+                    log(f"[PAPER] Weather bucket error: {e}")
+
+        await scanner.close()
+
+    except Exception as e:
+        log(f"[WEATHER-BUCKET] Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    log(f"[WEATHER-BUCKET] Found {len(results)} bucket arbitrage opportunities")
+    return results
+
+
 async def daemon_loop():
     log("=" * 60)
     log("  POLY-SCOUT v2: AUTONOMOUS PROFIT AGENT")
@@ -1551,6 +1624,7 @@ async def daemon_loop():
     log("    - New market monitoring (mispricing detection)")
     log("    - Blockchain scan (smart money detection)")
     log("    - Longshot scan (planktonXD strategy - <5c markets)")
+    log("    - Weather bucket scan (0xf2e346ab strategy - sum arbitrage)")
     log("")
     log("  Disabled (ENABLE_WALLET_ALERTS=false):")
     log("    - Leaderboard wallets")
@@ -1567,6 +1641,7 @@ async def daemon_loop():
     log(f"    - Twitter: {SCAN_INTERVAL_TWITTER // 60} min")
     log(f"    - Blockchain: {SCAN_INTERVAL_BLOCKCHAIN // 60} min")
     log(f"    - Longshot: {SCAN_INTERVAL_LONGSHOT // 60} min")
+    log(f"    - Weather Bucket: {SCAN_INTERVAL_WEATHER_BUCKET // 60} min")
     log(f"    - New Markets: {SCAN_INTERVAL_NEW_MARKETS}s")
     log(f"    - Scalp: {SCAN_INTERVAL_SCALP // 60} min")
     log("")
@@ -1588,6 +1663,7 @@ async def daemon_loop():
     last_longshot_scan = 0
     last_new_market_scan = 0
     last_scalp_scan = 0
+    last_weather_bucket_scan = 0
 
     # Create validator for all sources
     validator = EdgeValidator()
@@ -1644,6 +1720,15 @@ async def daemon_loop():
                     except Exception as e:
                         log(f"[LONGSHOT] Scan error: {e}")
                     last_longshot_scan = now
+
+            async def scan_weather_bucket():
+                nonlocal last_weather_bucket_scan
+                if now - last_weather_bucket_scan >= SCAN_INTERVAL_WEATHER_BUCKET:
+                    try:
+                        await run_weather_bucket_scan()
+                    except Exception as e:
+                        log(f"[WEATHER-BUCKET] Scan error: {e}")
+                    last_weather_bucket_scan = now
 
             async def scan_blockchain():
                 nonlocal last_blockchain_scan, alerts_sent
@@ -1703,6 +1788,7 @@ async def daemon_loop():
                 scan_new_markets(),
                 scan_scalp(),
                 scan_longshot(),
+                scan_weather_bucket(),
                 scan_blockchain(),
                 scan_leaderboard(),
                 scan_twitter(),
@@ -1736,6 +1822,8 @@ async def daemon_loop():
             next_scans.append(("New Markets", SCAN_INTERVAL_NEW_MARKETS - (datetime.now().timestamp() - last_new_market_scan)))
         if last_scalp_scan > 0:
             next_scans.append(("Scalp", SCAN_INTERVAL_SCALP - (datetime.now().timestamp() - last_scalp_scan)))
+        if last_weather_bucket_scan > 0:
+            next_scans.append(("Weather Bucket", SCAN_INTERVAL_WEATHER_BUCKET - (datetime.now().timestamp() - last_weather_bucket_scan)))
 
         # Wait until next scan is due
         if next_scans:
