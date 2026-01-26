@@ -1534,108 +1534,114 @@ async def daemon_loop():
             now = datetime.now().timestamp()
             alerts_sent = 0
 
-            # === LEADERBOARD SCAN ===
-            if now - last_leaderboard_scan >= SCAN_INTERVAL_LEADERBOARD:
-                results = await run_leaderboard_scan(saturation_history)
-                save_saturation_history(saturation_history)
+            # === PARALLEL SCAN EXECUTION ===
+            # Collect all due scans and run them concurrently
+            async def scan_sportsbook():
+                nonlocal last_sportsbook_scan, alerts_sent
+                if now - last_sportsbook_scan >= SCAN_INTERVAL_SPORTSBOOK:
+                    sportsbook_opps = await run_sportsbook_scan(validator)
+                    for opp, validation in sportsbook_opps:
+                        opp_id = f"sb:{opp.market_slug}:{opp.outcome}"
+                        if opp_id not in seen_opportunities:
+                            await send_telegram(format_sportsbook_alert(opp, validation))
+                            seen_opportunities.add(opp_id)
+                            alerts_sent += 1
+                    save_seen_opportunities(seen_opportunities)
+                    last_sportsbook_scan = now
 
-                new_wallets = [w for w in results if w["address"] not in seen_wallets]
-                if new_wallets:
-                    log(f"[ALERT] {len(new_wallets)} NEW profitable strategy(ies)!")
-                    for wallet in new_wallets:
-                        await send_telegram(format_alert(wallet), is_wallet_alert=True)
-                        seen_wallets.add(wallet["address"])
-                        alerts_sent += 1
+            async def scan_new_markets():
+                nonlocal last_new_market_scan
+                if now - last_new_market_scan >= SCAN_INTERVAL_NEW_MARKETS:
+                    try:
+                        await new_market_monitor.scan_for_new_markets()
+                    except Exception as e:
+                        log(f"[NEW MARKETS] Error: {e}")
+                    last_new_market_scan = now
+
+            async def scan_scalp():
+                nonlocal last_scalp_scan
+                if now - last_scalp_scan >= SCAN_INTERVAL_SCALP:
+                    try:
+                        scalp_scan_once()
+                    except Exception as e:
+                        log(f"[SCALP] Scan error: {e}")
+                    last_scalp_scan = now
+
+            async def scan_longshot():
+                nonlocal last_longshot_scan, alerts_sent
+                if now - last_longshot_scan >= SCAN_INTERVAL_LONGSHOT:
+                    try:
+                        longshot_opps = await run_longshot_scan()
+                        if longshot_opps:
+                            await send_longshot_alert(longshot_opps)
+                            alerts_sent += 1
+                    except Exception as e:
+                        log(f"[LONGSHOT] Scan error: {e}")
+                    last_longshot_scan = now
+
+            async def scan_blockchain():
+                nonlocal last_blockchain_scan, alerts_sent
+                if now - last_blockchain_scan >= SCAN_INTERVAL_BLOCKCHAIN:
+                    try:
+                        # Add 5-minute timeout to prevent blocking
+                        blockchain_wallets = await asyncio.wait_for(
+                            run_blockchain_scan(),
+                            timeout=300  # 5 minute timeout
+                        )
+                        for wallet in blockchain_wallets:
+                            await send_telegram(wallet.to_telegram_message(), is_wallet_alert=False)
+                            alerts_sent += 1
+                    except asyncio.TimeoutError:
+                        log(f"[BLOCKCHAIN] Scan timed out after 5 minutes")
+                    except Exception as e:
+                        log(f"[BLOCKCHAIN] Scan error: {e}")
+                    last_blockchain_scan = now
+
+            async def scan_leaderboard():
+                nonlocal last_leaderboard_scan, alerts_sent
+                if now - last_leaderboard_scan >= SCAN_INTERVAL_LEADERBOARD:
+                    results = await run_leaderboard_scan(saturation_history)
+                    save_saturation_history(saturation_history)
+                    new_wallets = [w for w in results if w["address"] not in seen_wallets]
+                    if new_wallets:
+                        log(f"[ALERT] {len(new_wallets)} NEW profitable strategy(ies)!")
+                        for wallet in new_wallets:
+                            await send_telegram(format_alert(wallet), is_wallet_alert=True)
+                            seen_wallets.add(wallet["address"])
+                            alerts_sent += 1
+                        save_seen_wallets(seen_wallets)
+                    strategy_reports = generate_strategy_report(results)
+                    if strategy_reports:
+                        log(f"[STRATEGY] Sending {len(strategy_reports)} strategy reports")
+                        for report in strategy_reports:
+                            await send_telegram(report, is_wallet_alert=True)
+                            alerts_sent += 1
+                    last_leaderboard_scan = now
+
+            async def scan_twitter():
+                nonlocal last_twitter_scan, alerts_sent
+                if now - last_twitter_scan >= SCAN_INTERVAL_TWITTER:
+                    twitter_wallets = await run_twitter_scan(saturation_history, seen_wallets)
+                    for wallet in twitter_wallets:
+                        if wallet["address"] not in seen_wallets:
+                            await send_telegram(format_alert(wallet), is_wallet_alert=True)
+                            seen_wallets.add(wallet["address"])
+                            alerts_sent += 1
                     save_seen_wallets(seen_wallets)
+                    last_twitter_scan = now
 
-                # Generate and send strategy reports (aggregated view)
-                strategy_reports = generate_strategy_report(results)
-                if strategy_reports:
-                    log(f"[STRATEGY] Sending {len(strategy_reports)} strategy reports")
-                    for report in strategy_reports:
-                        await send_telegram(report, is_wallet_alert=True)
-                        alerts_sent += 1
-
-                last_leaderboard_scan = now
-
-            # === SPORTSBOOK SCAN ===
-            if now - last_sportsbook_scan >= SCAN_INTERVAL_SPORTSBOOK:
-                sportsbook_opps = await run_sportsbook_scan(validator)
-
-                for opp, validation in sportsbook_opps:
-                    opp_id = f"sb:{opp.market_slug}:{opp.outcome}"
-                    if opp_id not in seen_opportunities:
-                        await send_telegram(format_sportsbook_alert(opp, validation))
-                        seen_opportunities.add(opp_id)
-                        alerts_sent += 1
-
-                save_seen_opportunities(seen_opportunities)
-                last_sportsbook_scan = now
-
-            # === TWITTER SCAN ===
-            if now - last_twitter_scan >= SCAN_INTERVAL_TWITTER:
-                twitter_wallets = await run_twitter_scan(saturation_history, seen_wallets)
-
-                for wallet in twitter_wallets:
-                    if wallet["address"] not in seen_wallets:
-                        await send_telegram(format_alert(wallet), is_wallet_alert=True)
-                        seen_wallets.add(wallet["address"])
-                        alerts_sent += 1
-
-                save_seen_wallets(seen_wallets)
-                last_twitter_scan = now
-
-            # === BLOCKCHAIN SCAN ===
-            if now - last_blockchain_scan >= SCAN_INTERVAL_BLOCKCHAIN:
-                try:
-                    blockchain_wallets = await run_blockchain_scan()
-
-                    for wallet in blockchain_wallets:
-                        # SmartMoneyWallet objects have to_telegram_message() method
-                        # is_wallet_alert=False bypasses ENABLE_WALLET_ALERTS (blockchain discovery is validated)
-                        await send_telegram(wallet.to_telegram_message(), is_wallet_alert=False)
-                        alerts_sent += 1
-
-                except Exception as e:
-                    log(f"[BLOCKCHAIN] Scan error: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-                last_blockchain_scan = now
-
-            # === LONGSHOT SCAN (planktonXD strategy) ===
-            if now - last_longshot_scan >= SCAN_INTERVAL_LONGSHOT:
-                try:
-                    longshot_opps = await run_longshot_scan()
-
-                    if longshot_opps:
-                        # Send Telegram alert with top opportunities
-                        await send_longshot_alert(longshot_opps)
-                        alerts_sent += 1
-
-                except Exception as e:
-                    log(f"[LONGSHOT] Scan error: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-                last_longshot_scan = now
-
-            # === NEW MARKET SCAN ===
-            # Scan for new markets (no Telegram alerts - paper trader handles this separately)
-            if now - last_new_market_scan >= SCAN_INTERVAL_NEW_MARKETS:
-                try:
-                    await new_market_monitor.scan_for_new_markets()
-                except Exception as e:
-                    log(f"[NEW MARKETS] Error: {e}")
-                last_new_market_scan = now
-
-            # === SCALP SCAN (Forward testing near-resolution strategy) ===
-            if now - last_scalp_scan >= SCAN_INTERVAL_SCALP:
-                try:
-                    scalp_scan_once()
-                except Exception as e:
-                    log(f"[SCALP] Scan error: {e}")
-                last_scalp_scan = now
+            # Run ALL scans in parallel - fast scans won't be blocked by slow ones
+            log("[PARALLEL] Running all due scans concurrently...")
+            await asyncio.gather(
+                scan_sportsbook(),
+                scan_new_markets(),
+                scan_scalp(),
+                scan_longshot(),
+                scan_blockchain(),
+                scan_leaderboard(),
+                scan_twitter(),
+                return_exceptions=True  # Don't fail all if one fails
+            )
 
             # Summary
             if alerts_sent > 0:
