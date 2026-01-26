@@ -11,6 +11,7 @@ Strategy:
 - Categories: Crypto volatility, geopolitics, esports, natural events
 """
 
+import asyncio
 import json
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
@@ -112,9 +113,11 @@ class LongshotScanner:
 
     async def fetch_all_markets(self) -> list:
         """Fetch markets from both Gamma and CLOB APIs, merge by condition_id."""
-        # Fetch from both APIs
-        gamma_markets = await self.fetch_gamma_markets()
-        clob_markets = await self.fetch_clob_markets()
+        # Fetch from both APIs in parallel for speed
+        gamma_markets, clob_markets = await asyncio.gather(
+            self.fetch_gamma_markets(),
+            self.fetch_clob_markets()
+        )
 
         log(f"Fetched {len(gamma_markets)} from Gamma, {len(clob_markets)} from CLOB")
 
