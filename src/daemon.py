@@ -86,6 +86,11 @@ SCAN_INTERVAL_SCALP = 300
 # Weather bucket scanner interval (10 minutes) - 0xf2e346ab bucket arbitrage
 SCAN_INTERVAL_WEATHER_BUCKET = 600
 
+# Paper trading allocations - $1000 per strategy
+STRATEGY_BUDGET = 1000.0  # Max allocation per strategy
+LONGSHOT_BET_SIZE = 50.0  # Per longshot bet
+WEATHER_BUCKET_BET_PER_BRACKET = 100.0  # Per bracket in weather arb
+
 load_dotenv()
 
 
@@ -1490,14 +1495,14 @@ async def run_longshot_scan() -> list[LongshotOpportunity]:
                 try:
                     portfolio = load_portfolio()
 
-                    # Calculate current longshot exposure (10% portfolio limit = $1,000)
-                    LONGSHOT_LIMIT = 1000.0  # 10% of $10,000 initial
+                    # Calculate current longshot exposure
+                    LONGSHOT_LIMIT = STRATEGY_BUDGET  # $1000 per strategy
                     longshot_exposure = sum(
                         p.get("cost_basis", 0) for p in portfolio.positions
                         if p.get("category") == "longshot" and p.get("status") == "open"
                     )
 
-                    bet_size = 20.0  # Fixed $20 per longshot
+                    bet_size = LONGSHOT_BET_SIZE  # $50 per longshot
 
                     # Check if we're at the limit
                     if longshot_exposure >= LONGSHOT_LIMIT:
@@ -1573,8 +1578,8 @@ async def run_weather_bucket_scan() -> list[BucketArbitrageOpportunity]:
                 try:
                     portfolio = load_portfolio()
 
-                    # Calculate bet size ($20 per bracket)
-                    bet_per_bracket = 20.0
+                    # Calculate bet size ($100 per bracket for $1000 strategy budget)
+                    bet_per_bracket = WEATHER_BUCKET_BET_PER_BRACKET
                     total_bet = bet_per_bracket * len(opp.brackets_to_buy)
 
                     if portfolio.cash >= total_bet:
