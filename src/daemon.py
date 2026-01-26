@@ -1487,7 +1487,7 @@ async def run_longshot_scan() -> list[LongshotOpportunity]:
                     portfolio = load_portfolio()
                     # Add longshot position manually (different from Kelly sizing)
                     bet_size = 20.0  # Fixed $20 per longshot
-                    if portfolio["cash"] >= bet_size:
+                    if portfolio.cash >= bet_size:
                         shares = bet_size / opp.price
                         position = {
                             "market_slug": opp.question[:50],  # Use question as slug
@@ -1505,8 +1505,8 @@ async def run_longshot_scan() -> list[LongshotOpportunity]:
                             "resolution_value": None,
                             "pnl": None
                         }
-                        portfolio["positions"].append(position)
-                        portfolio["cash"] -= bet_size
+                        portfolio.positions.append(position)
+                        portfolio.cash -= bet_size
                         save_portfolio(portfolio)
                         log(f"[PAPER] LONGSHOT: ${bet_size} on {opp.outcome} @ {cents:.1f}¢ ({opp.potential_return:.0f}x potential)")
                 except Exception as e:
