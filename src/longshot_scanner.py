@@ -58,28 +58,36 @@ class LongshotScanner:
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=30)
 
-    async def fetch_gamma_markets(self) -> list:
-        """Fetch all active markets from Gamma API."""
-        all_markets = []
+    async def fetch_events(self) -> list:
+        """Fetch all active events from Gamma API (faster than /markets)."""
+        all_events = []
         offset = 0
         limit = 500
 
         while True:
-            url = f"{GAMMA_API_BASE}/markets?active=true&closed=false&limit={limit}&offset={offset}"
+            url = f"{GAMMA_API_BASE}/events?active=true&closed=false&limit={limit}&offset={offset}"
             try:
                 resp = await self.client.get(url)
                 if resp.status_code != 200:
                     break
-                markets = resp.json()
-                if not markets:
+                events = resp.json()
+                if not events:
                     break
-                all_markets.extend(markets)
-                if len(markets) < limit:
+                all_events.extend(events)
+                if len(events) < limit:
                     break
                 offset += limit
             except Exception as e:
-                log(f"Error fetching Gamma markets: {e}")
+                log(f"Error fetching events: {e}")
                 break
+
+        # Extract markets from events
+        all_markets = []
+        for event in all_events:
+            markets = event.get("markets", [])
+            for market in markets:
+                market["_event_slug"] = event.get("slug", "")
+                all_markets.append(market)
 
         return all_markets
 
@@ -112,14 +120,14 @@ class LongshotScanner:
         return all_markets
 
     async def fetch_all_markets(self) -> list:
-        """Fetch markets from both Gamma and CLOB APIs, merge by condition_id."""
+        """Fetch markets from both Events and CLOB APIs, merge by condition_id."""
         # Fetch from both APIs in parallel for speed
-        gamma_markets, clob_markets = await asyncio.gather(
-            self.fetch_gamma_markets(),
+        event_markets, clob_markets = await asyncio.gather(
+            self.fetch_events(),
             self.fetch_clob_markets()
         )
 
-        log(f"Fetched {len(gamma_markets)} from Gamma, {len(clob_markets)} from CLOB")
+        log(f"Fetched {len(event_markets)} from Events, {len(clob_markets)} from CLOB")
 
         # Index CLOB markets by condition_id for price updates
         clob_by_condition = {}
@@ -128,8 +136,8 @@ class LongshotScanner:
             if cond_id:
                 clob_by_condition[cond_id] = m
 
-        # Merge: use Gamma data but update prices from CLOB if available
-        for market in gamma_markets:
+        # Merge: use Events data but update prices from CLOB if available
+        for market in event_markets:
             cond_id = market.get("conditionId")
             if cond_id and cond_id in clob_by_condition:
                 clob = clob_by_condition[cond_id]
@@ -145,7 +153,7 @@ class LongshotScanner:
                         market["outcomePrices"] = json.dumps(clob_prices)
                         market["_source"] = "clob"  # Mark as CLOB-updated
 
-        return gamma_markets
+        return event_markets
 
     def categorize_market(self, question: str) -> str:
         """Categorize market by content."""
