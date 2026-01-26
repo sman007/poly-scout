@@ -1323,7 +1323,24 @@ async def run_sportsbook_scan(validator: EdgeValidator) -> list[tuple[Sportsbook
             log(f"[SPORTSBOOK] Found {len(opportunities)} raw opportunities")
 
             for opp in opportunities:
-                # Validate each opportunity
+                # Paper trade ALL raw edges for win rate tracking (regardless of validation)
+                edge_pct = abs(opp.sb_price - opp.pm_price) * 100
+                if edge_pct >= 3.0:  # Minimum 3% edge
+                    try:
+                        portfolio = load_portfolio()
+                        paper_trade_sports_edge(
+                            portfolio=portfolio,
+                            market_slug=opp.market_slug,
+                            team=opp.outcome,
+                            pm_price=opp.pm_price,
+                            vegas_prob=opp.sb_price
+                        )
+                        save_portfolio(portfolio)
+                        log(f"[PAPER] Tracked: {opp.outcome} {opp.action} @ {opp.pm_price:.1%} (edge={edge_pct:+.1f}%)")
+                    except Exception as pt_error:
+                        log(f"[PAPER] Error: {pt_error}")
+
+                # Also validate for Telegram alerts (separate from paper tracking)
                 validation = await validator.validate_opportunity(
                     market_slug=opp.market_slug,
                     outcome=opp.outcome,
@@ -1336,20 +1353,6 @@ async def run_sportsbook_scan(validator: EdgeValidator) -> list[tuple[Sportsbook
                     log(f"[SPORTSBOOK] VALID: {opp.outcome} {opp.action} @ {opp.pm_price:.1%} "
                         f"(edge={validation.edge_pct:+.1f}%, profit=${validation.expected_profit:.2f})")
                     validated_opps.append((opp, validation))
-
-                    # Paper trade the opportunity
-                    try:
-                        portfolio = load_portfolio()
-                        paper_trade_sports_edge(
-                            portfolio=portfolio,
-                            market_slug=opp.market_slug,
-                            team=opp.outcome,
-                            pm_price=opp.pm_price,
-                            vegas_prob=opp.sb_price
-                        )
-                        save_portfolio(portfolio)
-                    except Exception as pt_error:
-                        log(f"[PAPER] Error: {pt_error}")
 
     except Exception as e:
         log(f"[SPORTSBOOK] Error: {e}")
