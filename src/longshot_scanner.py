@@ -18,7 +18,7 @@ from typing import Optional
 
 import httpx
 
-from src.config import GAMMA_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from src.config import GAMMA_API_BASE, CLOB_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 
 def log(msg: str):
@@ -57,8 +57,8 @@ class LongshotScanner:
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=30)
 
-    async def fetch_all_markets(self) -> list:
-        """Fetch all active markets."""
+    async def fetch_gamma_markets(self) -> list:
+        """Fetch all active markets from Gamma API."""
         all_markets = []
         offset = 0
         limit = 500
@@ -77,10 +77,72 @@ class LongshotScanner:
                     break
                 offset += limit
             except Exception as e:
-                log(f"Error fetching markets: {e}")
+                log(f"Error fetching Gamma markets: {e}")
                 break
 
         return all_markets
+
+    async def fetch_clob_markets(self) -> list:
+        """Fetch all active markets from CLOB API (real-time order book prices)."""
+        all_markets = []
+        try:
+            # CLOB API returns markets with next_cursor pagination
+            cursor = None
+            while True:
+                url = f"{CLOB_API_BASE}/markets"
+                if cursor:
+                    url += f"?next_cursor={cursor}"
+                resp = await self.client.get(url)
+                if resp.status_code != 200:
+                    log(f"CLOB API error: {resp.status_code}")
+                    break
+                data = resp.json()
+                markets = data if isinstance(data, list) else data.get("data", data.get("markets", []))
+                if not markets:
+                    break
+                all_markets.extend(markets)
+                # Check for pagination
+                cursor = data.get("next_cursor") if isinstance(data, dict) else None
+                if not cursor or len(markets) < 100:
+                    break
+        except Exception as e:
+            log(f"Error fetching CLOB markets: {e}")
+
+        return all_markets
+
+    async def fetch_all_markets(self) -> list:
+        """Fetch markets from both Gamma and CLOB APIs, merge by condition_id."""
+        # Fetch from both APIs
+        gamma_markets = await self.fetch_gamma_markets()
+        clob_markets = await self.fetch_clob_markets()
+
+        log(f"Fetched {len(gamma_markets)} from Gamma, {len(clob_markets)} from CLOB")
+
+        # Index CLOB markets by condition_id for price updates
+        clob_by_condition = {}
+        for m in clob_markets:
+            cond_id = m.get("condition_id")
+            if cond_id:
+                clob_by_condition[cond_id] = m
+
+        # Merge: use Gamma data but update prices from CLOB if available
+        for market in gamma_markets:
+            cond_id = market.get("conditionId")
+            if cond_id and cond_id in clob_by_condition:
+                clob = clob_by_condition[cond_id]
+                # CLOB has tokens array with price info
+                tokens = clob.get("tokens", [])
+                if tokens:
+                    # Update outcomePrices from CLOB's more recent data
+                    clob_prices = []
+                    for token in tokens:
+                        price = token.get("price", 0)
+                        clob_prices.append(str(price))
+                    if clob_prices:
+                        market["outcomePrices"] = json.dumps(clob_prices)
+                        market["_source"] = "clob"  # Mark as CLOB-updated
+
+        return gamma_markets
 
     def categorize_market(self, question: str) -> str:
         """Categorize market by content."""
